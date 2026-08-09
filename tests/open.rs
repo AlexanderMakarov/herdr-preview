@@ -75,9 +75,14 @@ exit 1
     stub
 }
 
-fn fake_xdg_open(root: &Path) -> PathBuf {
+fn fake_browser_open(root: &Path) -> PathBuf {
+    let name = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let log = stub_log_path(root);
-    let stub = root.join("xdg-open");
+    let stub = root.join(name);
     write_executable(
         &stub,
         &format!(
