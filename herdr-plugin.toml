@@ -1,8 +1,7 @@
 # herdr-plugin.toml — manifest for herdr-preview.
 #
-# Hint overlay on visible pane text; opens picks in herdr-file-viewer when
-# installed, otherwise `less` in an overlay. http(s) → system browser.
-# No link_handlers — never hijack Ctrl+click on git URLs.
+# Hint overlay on visible pane file paths; opens picks in herdr-file-viewer when
+# installed, otherwise `less` in an overlay.
 
 id = "herdr-preview"
 name = "herdr-preview"
