@@ -366,11 +366,13 @@ impl RawMode {
             return Err(io::Error::last_os_error());
         }
         let mut raw = original;
-        // cbreak-ish: byte-at-a-time, no echo; keep ISIG so Ctrl+C can still kill
+        // True cbreak: byte-at-a-time, no echo; keep ISIG so Ctrl+C can still kill
         // a wedged overlay during development.
+        // Do NOT clear OPOST — paint uses writeln! (`\n`). With OPOST off, `\n` is
+        // bare LF (cursor down, same column) → blank screen + “ladder” of tokens.
+        // That regressed when paint moved after RawMode::enter (geometry paint).
         raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN);
         raw.c_iflag &= !(libc::IXON | libc::ICRNL);
-        raw.c_oflag &= !libc::OPOST;
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
