@@ -64,9 +64,14 @@ exit 1
     stub
 }
 
-fn fake_xdg_open(root: &Path) -> PathBuf {
+fn fake_browser_open(root: &Path) -> PathBuf {
+    let name = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let log = stub_log_path(root);
-    let stub = root.join("xdg-open");
+    let stub = root.join(name);
     write_executable(
         &stub,
         &format!(
@@ -340,7 +345,7 @@ fn url_routes_to_browser_helper_only() {
     let list = "2 plugins installed:\n- herdr-file-viewer (herdr-file-viewer) enabled\n";
     let herdr = herdr_with_plugin_list(&root, list);
     let _gh = fake_gh(&root);
-    fake_xdg_open(&root);
+    let opener = fake_browser_open(&root);
     let cwd = root.join("repo");
     fs::create_dir_all(&cwd).unwrap();
 
@@ -352,7 +357,7 @@ fn url_routes_to_browser_helper_only() {
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert_eq!(invocations.len(), 1, "expected single browser invocation");
-    assert_eq!(invocations[0][0], root.join("xdg-open").to_string_lossy());
+    assert_eq!(invocations[0][0], opener.to_string_lossy());
     assert_eq!(invocations[0][1], "https://github.com/org/repo/pull/1");
     assert!(!root.join("gh.log").exists());
 }
