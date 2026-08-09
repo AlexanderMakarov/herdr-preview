@@ -62,3 +62,36 @@ fn serialize_matches_format_list() {
     assert!(!entries.is_empty());
     assert_eq!(serialize_entries(&entries), format_list(&entries));
 }
+
+#[test]
+fn builds_hint_for_path_only_in_visible_worktree() {
+    let root = temp_fixture("wt-hint");
+    let cwd = root.join("repo");
+    let wt = cwd.join(".claude/worktrees/feat-109-explain-the-product");
+    fs::create_dir_all(wt.join("context/spec/008-make-product-explain-itself")).unwrap();
+    let rel = "context/spec/008-make-product-explain-itself/technical-considerations.md";
+    fs::write(wt.join(rel), "# tech\n").unwrap();
+
+    // Relative path appears BEFORE the worktree dir on screen (common agent layout).
+    let text = format!(
+        "Approval gate ready.\n\n  {rel}\n\n  worktree: {wt_disp}\n",
+        wt_disp = wt.display()
+    );
+    let entries = build_entries(&text, &cwd);
+    let hit = entries
+        .iter()
+        .find(|e| e.raw == rel)
+        .expect("relative path in worktree should be hinted");
+    match &hit.target {
+        herdr_preview::classify::Target::File { open_spec, path } => {
+            assert_eq!(
+                open_spec,
+                &format!(
+                    ".claude/worktrees/feat-109-explain-the-product/{rel}"
+                )
+            );
+            assert_eq!(path, &wt.join(rel));
+        }
+        other => panic!("expected file target, got {other:?}"),
+    }
+}

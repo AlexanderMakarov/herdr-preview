@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::classify::{classify, Target};
+use crate::classify::{classify, classify_with_fallbacks, is_worktree_dir, Target};
 use crate::herdr_ipc::{notify, read_focused_snapshot, HerdrIpcError, PaneSnapshot};
 use crate::open::{detect_file_viewer, open_file_viewer, open_less, open_url};
 use crate::tokenize::{find_candidates, Span};
@@ -64,25 +64,45 @@ impl From<io::Error> for HintError {
 }
 
 pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
-    let mut entries = Vec::new();
-    let mut seen = Vec::new();
-
-    for Span { start, end, raw } in find_candidates(text) {
-        if seen.iter().any(|existing| existing == &raw) {
+    let mut unique: Vec<Span> = Vec::new();
+    let mut seen_raw = Vec::new();
+    for span in find_candidates(text) {
+        if seen_raw.iter().any(|existing| existing == &span.raw) {
             continue;
         }
-        let target = classify(&raw, cwd);
+        seen_raw.push(span.raw.clone());
+        unique.push(span);
+    }
+
+    // Classify everything against the pane cwd first so later-visible worktree
+    // dirs can rescue earlier missing relative paths in a second pass.
+    let primary: Vec<Target> = unique.iter().map(|span| classify(&span.raw, cwd)).collect();
+    let mut fallbacks: Vec<PathBuf> = Vec::new();
+    for target in &primary {
+        if let Target::Dir { path, .. } = target {
+            if is_worktree_dir(path) && !fallbacks.iter().any(|existing| existing == path) {
+                fallbacks.push(path.clone());
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (span, primary_target) in unique.into_iter().zip(primary) {
+        let target = if matches!(primary_target, Target::Missing { .. }) && !fallbacks.is_empty() {
+            classify_with_fallbacks(&span.raw, cwd, &fallbacks)
+        } else {
+            primary_target
+        };
         // MVP overlay is filesystem paths only; http(s) stays Ctrl+click → browser.
         if matches!(target, Target::Missing { .. } | Target::Url(_)) {
             continue;
         }
-        seen.push(raw.clone());
         if let Some(key) = hint_key_for_index(entries.len()) {
             entries.push(HintEntry {
                 key,
-                start,
-                end,
-                raw,
+                start: span.start,
+                end: span.end,
+                raw: span.raw,
                 target,
             });
         } else {

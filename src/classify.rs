@@ -40,6 +40,57 @@ pub fn classify(raw: &str, cwd: &Path) -> Target {
     }
 }
 
+/// Like [`classify`], but if `cwd` misses, try each fallback root (e.g. a
+/// `.claude/worktrees/…` directory visible in the same pane).
+///
+/// When a fallback hits, `open_spec` is rewritten relative to `cwd` when the
+/// resolved path is under that tree so FV rooted at the agent pane still opens
+/// it (e.g. `.claude/worktrees/feat/…/file.md`).
+pub fn classify_with_fallbacks(raw: &str, cwd: &Path, fallbacks: &[PathBuf]) -> Target {
+    let primary = classify(raw, cwd);
+    if !matches!(primary, Target::Missing { .. }) {
+        return primary;
+    }
+
+    for root in fallbacks {
+        if root.as_path() == cwd {
+            continue;
+        }
+        match classify(raw, root) {
+            Target::File { path, .. } => {
+                return Target::File {
+                    open_spec: open_spec_under_base(raw, &path, cwd),
+                    path,
+                };
+            }
+            Target::Dir { path, .. } => {
+                return Target::Dir {
+                    open_spec: open_spec_under_base(raw, &path, cwd),
+                    path,
+                };
+            }
+            Target::Url(_) | Target::Missing { .. } => continue,
+        }
+    }
+
+    primary
+}
+
+/// True when `path` looks like a git/claude worktree directory (`…/worktrees/…`).
+pub fn is_worktree_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "worktrees")
+}
+
+fn open_spec_under_base(raw: &str, resolved: &Path, base: &Path) -> String {
+    let path_raw = strip_file_url(raw.trim());
+    let (_, line_suffix) = split_line_suffix(path_raw);
+    if let Ok(rel) = resolved.strip_prefix(base) {
+        return build_open_spec(&rel.to_string_lossy(), line_suffix.as_deref());
+    }
+    build_open_spec(&resolved.to_string_lossy(), line_suffix.as_deref())
+}
+
 fn strip_file_url(raw: &str) -> &str {
     raw.strip_prefix("file://").unwrap_or(raw)
 }

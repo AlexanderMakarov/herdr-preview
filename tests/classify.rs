@@ -195,3 +195,37 @@ fn expands_tilde_home_paths() {
     );
     assert_eq!(dir_target_path(dir), home.join("scripts"));
 }
+
+#[test]
+fn fallback_worktree_rewrites_open_spec_under_primary_cwd() {
+    use herdr_preview::classify::classify_with_fallbacks;
+
+    let root = temp_fixture("wt");
+    let cwd = root.join("repo");
+    let wt = cwd.join(".claude/worktrees/feat-x");
+    fs::create_dir_all(wt.join("context/spec")).unwrap();
+    fs::write(
+        wt.join("context/spec/technical-considerations.md"),
+        "# tech\n",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        classify("context/spec/technical-considerations.md", &cwd),
+        Target::Missing { .. }
+    ));
+
+    let target = classify_with_fallbacks(
+        "context/spec/technical-considerations.md",
+        &cwd,
+        &[wt.clone()],
+    );
+    assert_eq!(
+        file_target_path(target.clone()),
+        wt.join("context/spec/technical-considerations.md")
+    );
+    assert_eq!(
+        file_open_spec(target),
+        ".claude/worktrees/feat-x/context/spec/technical-considerations.md"
+    );
+}
