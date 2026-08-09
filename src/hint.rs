@@ -6,6 +6,7 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -271,18 +272,24 @@ fn overlay_pick(entries: &[HintEntry], snapshot: &str) -> Result<OverlayChoice, 
     render_overlay(&mut stdout, entries, snapshot)?;
     stdout.flush()?;
 
+    // Must use cbreak/raw on the pane TTY. Cooked mode buffers until Enter and
+    // can block forever on Esc sequence peeks — symptom: "highlighted but dead".
     let mut tty = open_tty()?;
+    let _raw = RawMode::enter(tty.as_raw_fd())?;
+    let _cursor = ShowCursorOnDrop;
+
     loop {
-        let key = read_key(&mut tty)?;
-        if matches!(key, b'q' | b'Q' | ESC) {
-            write!(stdout, "{ANSI_SHOW}")?;
-            stdout.flush()?;
-            return Ok(OverlayChoice::Cancel);
-        }
-        if let Some(index) = entries.iter().position(|entry| entry.key == key as char) {
-            write!(stdout, "{ANSI_SHOW}")?;
-            stdout.flush()?;
-            return Ok(OverlayChoice::Pick(index));
+        match read_key(&mut tty)? {
+            KeyPress::Cancel => return Ok(OverlayChoice::Cancel),
+            KeyPress::Ignore => continue,
+            KeyPress::Byte(key) => {
+                if matches!(key, b'q' | b'Q') {
+                    return Ok(OverlayChoice::Cancel);
+                }
+                if let Some(index) = entries.iter().position(|entry| entry.key == key as char) {
+                    return Ok(OverlayChoice::Pick(index));
+                }
+            }
         }
     }
 }
@@ -291,6 +298,59 @@ const ESC: u8 = 0x1b;
 const ANSI_HOME: &str = "\x1b[H\x1b[J";
 const ANSI_HIDE: &str = "\x1b[?25l";
 const ANSI_SHOW: &str = "\x1b[?25h";
+
+/// RAII: restore cursor visibility when the overlay exits for any reason.
+struct ShowCursorOnDrop;
+
+impl Drop for ShowCursorOnDrop {
+    fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        let _ = write!(stdout, "{ANSI_SHOW}");
+        let _ = stdout.flush();
+    }
+}
+
+/// Put the pane TTY into non-canonical, no-echo mode so single keypresses
+/// arrive immediately (same contract as quicklook's `read -rsn1`).
+struct RawMode {
+    fd: libc::c_int,
+    original: libc::termios,
+}
+
+impl RawMode {
+    fn enter(fd: libc::c_int) -> io::Result<Self> {
+        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut raw = original;
+        // cbreak-ish: byte-at-a-time, no echo; keep ISIG so Ctrl+C can still kill
+        // a wedged overlay during development.
+        raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN);
+        raw.c_iflag &= !(libc::IXON | libc::ICRNL);
+        raw.c_oflag &= !libc::OPOST;
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd, original })
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
+        }
+    }
+}
+
+enum KeyPress {
+    Byte(u8),
+    Cancel,
+    Ignore,
+}
 
 fn render_overlay(out: &mut impl Write, entries: &[HintEntry], snapshot: &str) -> io::Result<()> {
     writeln!(out, "\x1b[2;90mherdr-preview hint\x1b[0m  \x1b[90mq/Esc cancel\x1b[0m")?;
@@ -317,16 +377,31 @@ fn open_tty() -> io::Result<fs::File> {
     fs::OpenOptions::new().read(true).write(true).open("/dev/tty")
 }
 
-fn read_key(tty: &mut fs::File) -> io::Result<u8> {
+fn read_key(tty: &mut fs::File) -> io::Result<KeyPress> {
     let mut buf = [0u8; 1];
     tty.read_exact(&mut buf)?;
-    if buf[0] == ESC {
-        let mut extra = [0u8; 2];
-        if tty.read(&mut extra)? > 0 {
-            // swallow simple escape sequences (arrow keys, etc.)
-        }
+    if buf[0] != ESC {
+        return Ok(KeyPress::Byte(buf[0]));
     }
-    Ok(buf[0])
+
+    // Bare Esc cancels. CSI/SS3 sequences (arrows, mouse) must not block —
+    // poll briefly then drain, matching quicklook `read -rsn1 -t 0.05`.
+    let fd = tty.as_raw_fd();
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+    if ready == 0 {
+        return Ok(KeyPress::Cancel);
+    }
+    if ready < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut extra = [0u8; 32];
+    let _ = tty.read(&mut extra)?;
+    Ok(KeyPress::Ignore)
 }
 
 /// Which opener `open_entry` will use after peer-detect (`herdr plugin list`).
