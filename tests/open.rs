@@ -383,7 +383,7 @@ fn open_less_errors_when_less_missing() {
 fn open_url_uses_browser_helper_only() {
     let root = temp_fixture("url");
     let _gh = fake_gh(&root);
-    fake_xdg_open(&root);
+    let opener = fake_browser_open(&root);
 
     with_path_only(&root, || {
         open_url("https://example.com/pr/1").expect("open_url");
@@ -391,7 +391,7 @@ fn open_url_uses_browser_helper_only() {
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0][0], root.join("xdg-open").to_string_lossy());
+    assert_eq!(invocations[0][0], opener.to_string_lossy());
     assert_eq!(invocations[0][1], "https://example.com/pr/1");
     assert!(!root.join("gh.log").exists());
 }
