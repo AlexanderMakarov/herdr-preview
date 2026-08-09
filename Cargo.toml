@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 publish = false
 
+[dependencies]
+serde_json = "1"
+
 [[bin]]
 name = "herdr-preview"
 path = "src/main.rs"
