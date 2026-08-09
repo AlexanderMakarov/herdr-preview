@@ -215,24 +215,27 @@ fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String) {
     };
     let abs = candidate.canonicalize().unwrap_or(candidate);
 
-    let root = git_toplevel(&abs)
-        .or_else(|| git_toplevel(cwd))
+    // Root at the origin pane's worktree/cwd. `plugin pane open` roots the
+    // viewer at the focused/target pane — so OPEN must be relative to that
+    // tree, not the target file's repo when it differs (common for shell `~/…`).
+    let root = git_toplevel(cwd)
         .unwrap_or_else(|| cwd.to_path_buf());
     let root = root.canonicalize().unwrap_or(root);
 
     let rel = abs
         .strip_prefix(&root)
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path_part.to_string());
+        .unwrap_or_else(|_| abs.to_string_lossy().into_owned());
     (root, format!("{rel}{suffix}"))
 }
 
 /// Open a path in herdr-file-viewer rooted at the origin repo/worktree.
 ///
-/// `plugin pane open` follows the *focused* pane. From the hint overlay that
-/// would be the plugin tree, so we:
+/// `plugin pane open` follows the *focused* / *target* pane. From the hint
+/// overlay that would be the plugin tree, so we:
 /// 1. Focus the origin pane via zoom --on/--off (same as FV's own launcher)
-/// 2. `plugin pane open --placement split --direction right` with OPEN env
+/// 2. `plugin pane open --target-pane <origin> --placement split --direction right`
+///    with OPEN env (target-pane binds the spawn to that pane's cwd)
 ///
 /// If no origin pane id is known, fall back to quicklook's outside-root
 /// pattern: `tab create --cwd <root>` + `pane run <abs-viewer-bin>`.
@@ -260,6 +263,8 @@ pub fn open_file_viewer(
                 "split",
                 "--direction",
                 "right",
+                "--target-pane",
+                origin,
                 "--focus",
                 "--env",
                 &env,

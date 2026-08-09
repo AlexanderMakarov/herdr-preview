@@ -214,3 +214,46 @@ exit 1
     assert_eq!(snapshot.cwd, PathBuf::from("/tmp/agent-repo"));
     assert!(snapshot.visible_text.contains("docs/plan.md"));
 }
+
+#[test]
+fn read_focused_snapshot_prefers_live_foreground_cwd_over_context() {
+    let root = temp_fixture("fg-cwd");
+    let herdr = root.join("herdr");
+    write_executable(
+        &herdr,
+        r#"#!/bin/bash
+if [ "$1" = pane ] && [ "$2" = get ] && [ "$3" = "w9:shell" ]; then
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:shell","cwd":"/stale","foreground_cwd":"/tmp/live-shell"}}}'
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = read ] && [ "$3" = "w9:shell" ]; then
+  printf '%s' 'see Cargo.toml\n'
+  exit 0
+fi
+echo "unexpected: $*" >&2
+exit 1
+"#,
+    );
+
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let old = std::env::var_os("HERDR_BIN_PATH");
+    let old_ctx = std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON");
+    std::env::set_var("HERDR_BIN_PATH", &herdr);
+    std::env::set_var(
+        "HERDR_PLUGIN_CONTEXT_JSON",
+        r#"{"focused_pane_id":"w9:shell","focused_pane_cwd":"/tmp/context-stale"}"#,
+    );
+    let snapshot = read_focused_snapshot().expect("snapshot");
+    match old_ctx {
+        Some(value) => std::env::set_var("HERDR_PLUGIN_CONTEXT_JSON", value),
+        None => std::env::remove_var("HERDR_PLUGIN_CONTEXT_JSON"),
+    }
+    match old {
+        Some(value) => std::env::set_var("HERDR_BIN_PATH", value),
+        None => std::env::remove_var("HERDR_BIN_PATH"),
+    }
+
+    assert_eq!(snapshot.pane_id, "w9:shell");
+    assert_eq!(snapshot.cwd, PathBuf::from("/tmp/live-shell"));
+    assert!(snapshot.visible_text.contains("Cargo.toml"));
+}

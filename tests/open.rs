@@ -260,6 +260,57 @@ exit 0
 }
 
 #[test]
+fn open_file_viewer_with_origin_focuses_and_targets_that_pane() {
+    let root = temp_fixture("fv-origin");
+    let log = stub_log_path(&root);
+    let herdr = root.join("herdr");
+    write_executable(
+        &herdr,
+        &format!(
+            r#"#!/bin/bash
+log={log:?}
+{log_body}
+exit 0
+"#,
+            log = log.display(),
+            log_body = log_args_stub(&log),
+        ),
+    );
+    let _gh = fake_gh(&root);
+    let cwd = root.join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::write(cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
+
+    with_path_only(&root, || {
+        std::env::set_var("HERDR_BIN_PATH", &herdr);
+        open_file_viewer("src/app.rs", &cwd, Some("w9:shell")).expect("open_file_viewer");
+    });
+
+    let invocations = read_invocations(&stub_log_path(&root));
+    // zoom --on, zoom --off, plugin pane open
+    assert!(
+        invocations.len() >= 3,
+        "expected zoom on/off + open, got {invocations:?}"
+    );
+    assert!(invocations.iter().any(|args| {
+        args.windows(2).any(|w| w == ["pane", "zoom"]) && args.iter().any(|a| a == "--on")
+    }));
+    assert!(invocations.iter().any(|args| {
+        args.windows(2).any(|w| w == ["pane", "zoom"]) && args.iter().any(|a| a == "--off")
+    }));
+    let open = invocations
+        .iter()
+        .find(|args| args.windows(3).any(|w| w == ["plugin", "pane", "open"]))
+        .expect("plugin pane open");
+    assert!(open
+        .windows(2)
+        .any(|w| w == ["--target-pane", "w9:shell"]));
+    assert!(open.windows(2).any(|w| {
+        w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs"
+    }));
+}
+
+#[test]
 fn open_less_spawns_overlay_with_line() {
     let root = temp_fixture("less-line");
     let herdr = fake_herdr(&root);
