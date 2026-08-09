@@ -29,6 +29,22 @@ fn keeps_clearly_path_shaped_spaces_in_one_candidate() {
 }
 
 #[test]
+fn keeps_nested_spaced_path_in_one_candidate() {
+    let spans = find_candidates("open /tmp/My folder/file.md");
+
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].raw, "/tmp/My folder/file.md");
+}
+
+#[test]
+fn does_not_join_directory_prefix_through_prose() {
+    let spans = find_candidates("docs/ directory and file.md");
+
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].raw, "docs/");
+}
+
+#[test]
 fn keeps_percent_encoded_spaces_in_raw_candidate() {
     let spans = find_candidates("open docs/Tray%20status.md");
 

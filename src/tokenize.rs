@@ -38,6 +38,7 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
             let mut consumed_through = index;
 
             if !has_filename_shape(word) {
+                let starts_at_directory_boundary = word.ends_with('/');
                 for (next_index, bounds) in words.iter().enumerate().skip(index + 1) {
                     let (next_start, next_end) = trim_wrappers(line, *bounds);
                     let next_word = &line[next_start..next_end];
@@ -45,8 +46,17 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
                         break;
                     }
                     if has_filename_shape(next_word) {
-                        candidate_end = next_end;
-                        consumed_through = next_index;
+                        let has_nested_separator = next_word.contains('/');
+                        let is_immediate_next_word = next_index == index + 1;
+                        let has_distinctive_name = has_distinctive_path_punctuation(next_word);
+
+                        if has_nested_separator
+                            || (!starts_at_directory_boundary
+                                && (is_immediate_next_word || has_distinctive_name))
+                        {
+                            candidate_end = next_end;
+                            consumed_through = next_index;
+                        }
                         break;
                     }
                 }
@@ -130,11 +140,20 @@ fn has_filename_shape(word: &str) -> bool {
         .is_some_and(|name| name.rfind('.').is_some_and(|dot| dot > 0))
 }
 
+fn has_distinctive_path_punctuation(word: &str) -> bool {
+    let final_component = word.rsplit('/').next().unwrap_or(word);
+    let name = final_component.split(':').next().unwrap_or(final_component);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+
+    stem.chars()
+        .any(|character| matches!(character, '-' | '+' | '~' | '%' | '…'))
+}
+
 fn is_path_continuation(word: &str) -> bool {
     !word.is_empty()
         && word.chars().all(|character| {
             character.is_alphanumeric()
-                || matches!(character, '_' | '-' | '.' | '+' | '~' | '%' | '…')
+                || matches!(character, '_' | '-' | '.' | '+' | '~' | '%' | '…' | '/')
         })
 }
 
