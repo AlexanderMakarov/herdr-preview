@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -80,6 +81,63 @@ pub fn classify_with_fallbacks(raw: &str, cwd: &Path, fallbacks: &[PathBuf]) -> 
 pub fn is_worktree_dir(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == "worktrees")
+}
+
+/// Extra roots to try when a relative path misses under `cwd`.
+///
+/// Includes on-disk git worktrees for this repo (via `git worktree list`) and
+/// any immediate children of `.claude/worktrees/`. Callers should prepend any
+/// worktree dirs observed in the visible snapshot so those win when several
+/// worktrees contain the same relative path.
+pub fn discover_worktree_roots(cwd: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+
+    if let Some(from_git) = git_worktree_paths(cwd) {
+        for path in from_git {
+            let canon = path.canonicalize().unwrap_or(path);
+            if canon != cwd_canon && canon.is_dir() && !roots.iter().any(|r| r == &canon) {
+                roots.push(canon);
+            }
+        }
+    }
+
+    let claude_root = cwd.join(".claude/worktrees");
+    if let Ok(entries) = std::fs::read_dir(&claude_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let canon = path.canonicalize().unwrap_or(path);
+            if canon != cwd_canon && !roots.iter().any(|r| r == &canon) {
+                roots.push(canon);
+            }
+        }
+    }
+
+    roots
+}
+
+fn git_worktree_paths(cwd: &Path) -> Option<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if !path.is_empty() {
+                paths.push(PathBuf::from(path));
+            }
+        }
+    }
+    Some(paths)
 }
 
 fn open_spec_under_base(raw: &str, resolved: &Path, base: &Path) -> String {

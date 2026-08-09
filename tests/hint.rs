@@ -95,3 +95,29 @@ fn builds_hint_for_path_only_in_visible_worktree() {
         other => panic!("expected file target, got {other:?}"),
     }
 }
+
+#[test]
+fn builds_hint_for_worktree_path_even_when_worktree_not_on_screen() {
+    let root = temp_fixture("wt-disk");
+    let cwd = root.join("repo");
+    // Minimal git repo so discover_worktree_roots can also use git; .claude path alone is enough.
+    let wt = cwd.join(".claude/worktrees/feat-only-on-disk");
+    fs::create_dir_all(wt.join("context/spec")).unwrap();
+    let rel = "context/spec/technical-considerations.md";
+    fs::write(wt.join(rel), "# tech\n").unwrap();
+
+    let text = format!("Approval gate ready.\n\n  {rel}\n");
+    let entries = build_entries(&text, &cwd);
+    let hit = entries
+        .iter()
+        .find(|e| e.raw == rel)
+        .expect("disk worktree should rescue the path without it being on-screen");
+    assert!(
+        matches!(
+            &hit.target,
+            herdr_preview::classify::Target::File { path, .. } if path == &wt.join(rel)
+        ),
+        "got {:?}",
+        hit.target
+    );
+}

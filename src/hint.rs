@@ -10,7 +10,9 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::classify::{classify, classify_with_fallbacks, is_worktree_dir, Target};
+use crate::classify::{
+    classify, classify_with_fallbacks, discover_worktree_roots, is_worktree_dir, Target,
+};
 use crate::herdr_ipc::{notify, read_focused_snapshot, HerdrIpcError, PaneSnapshot};
 use crate::open::{detect_file_viewer, open_file_viewer, open_less, open_url};
 use crate::tokenize::{find_candidates, Span};
@@ -83,6 +85,14 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
             if is_worktree_dir(path) && !fallbacks.iter().any(|existing| existing == path) {
                 fallbacks.push(path.clone());
             }
+        }
+    }
+    // Also probe on-disk worktrees under this repo — agent panes often keep
+    // pane.cwd on main while the spoken path lives only in a worktree, and that
+    // worktree line may be scrolled off the visible snapshot.
+    for path in discover_worktree_roots(cwd) {
+        if !fallbacks.iter().any(|existing| existing == &path) {
+            fallbacks.push(path);
         }
     }
 
