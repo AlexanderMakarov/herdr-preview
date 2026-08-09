@@ -112,12 +112,17 @@ fn builds_hint_for_worktree_path_even_when_worktree_not_on_screen() {
         .iter()
         .find(|e| e.raw == rel)
         .expect("disk worktree should rescue the path without it being on-screen");
-    assert!(
-        matches!(
-            &hit.target,
-            herdr_preview::classify::Target::File { path, .. } if path == &wt.join(rel)
-        ),
-        "got {:?}",
-        hit.target
-    );
+    match &hit.target {
+        herdr_preview::classify::Target::File { open_spec, path } => {
+            assert_eq!(
+                path.canonicalize().unwrap(),
+                wt.join(rel).canonicalize().unwrap()
+            );
+            assert_eq!(
+                open_spec,
+                &format!(".claude/worktrees/feat-only-on-disk/{rel}")
+            );
+        }
+        other => panic!("expected file target, got {other:?}"),
+    }
 }

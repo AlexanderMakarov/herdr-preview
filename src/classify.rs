@@ -143,7 +143,13 @@ fn git_worktree_paths(cwd: &Path) -> Option<Vec<PathBuf>> {
 fn open_spec_under_base(raw: &str, resolved: &Path, base: &Path) -> String {
     let path_raw = strip_file_url(raw.trim());
     let (_, line_suffix) = split_line_suffix(path_raw);
-    if let Ok(rel) = resolved.strip_prefix(base) {
+    // macOS often hands non-canonical cwd (`/var/...`) while canonicalize()
+    // yields `/private/var/...`; strip_prefix must use the same form.
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let resolved = resolved
+        .canonicalize()
+        .unwrap_or_else(|_| resolved.to_path_buf());
+    if let Ok(rel) = resolved.strip_prefix(&base) {
         return build_open_spec(&rel.to_string_lossy(), line_suffix.as_deref());
     }
     build_open_spec(&resolved.to_string_lossy(), line_suffix.as_deref())
