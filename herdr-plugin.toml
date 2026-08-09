@@ -28,6 +28,6 @@ command = ["bash", "scripts/less-pane.sh"]
 [[actions]]
 id = "hint"
 platforms = ["linux", "macos"]
-title = "Hint-pick openable tokens on screen"
+title = "Hint-pick openable file paths on screen"
 description = "Overlay letter hints on file paths in the visible pane; press a key to open."
 command = ["bash", "scripts/run-hint.sh"]
