@@ -45,9 +45,15 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
                     if !is_path_continuation(next_word) {
                         break;
                     }
+                    // A later slash-bearing token starts a new path (e.g. "src/foo and
+                    // docs/") unless it is the immediate next word providing
+                    // `folder/file.ext` after a spaced directory name.
+                    let is_immediate_next_word = next_index == index + 1;
+                    if next_word.contains('/') && !is_immediate_next_word {
+                        break;
+                    }
                     if has_filename_shape(next_word) {
                         let has_nested_separator = next_word.contains('/');
-                        let is_immediate_next_word = next_index == index + 1;
                         let has_distinctive_name = has_distinctive_path_punctuation(next_word);
 
                         if has_nested_separator
@@ -129,15 +135,53 @@ fn is_url(word: &str) -> bool {
 }
 
 fn is_path_start(word: &str) -> bool {
-    !is_url(word) && word.contains('/') && word != "/"
+    if is_url(word) || word.is_empty() || word == "/" || word == "." || word == ".." {
+        return false;
+    }
+    // Relative/absolute with a separator, directory slash, or bare filename.ext
+    word.contains('/') || is_bare_filename(word)
+}
+
+fn is_bare_filename(word: &str) -> bool {
+    if word.contains('/') {
+        return false;
+    }
+    let name = word.split(':').next().unwrap_or(word);
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    // Require a non-leading '.' so Cargo.toml / main.rs / .gitignore match,
+    // but plain words like "error" / "src" do not.
+    match name.rfind('.') {
+        Some(0) => {
+            // ".gitignore" — hidden file without a second dot: treat as path-like.
+            name.len() > 1
+                && name.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+                })
+        }
+        Some(dot) => {
+            let ext = &name[dot + 1..];
+            !ext.is_empty()
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'))
+        }
+        None => false,
+    }
 }
 
 fn has_filename_shape(word: &str) -> bool {
+    if word.ends_with('/') {
+        return true;
+    }
     let final_component = word.rsplit('/').next().unwrap_or(word);
-    final_component
-        .split(':')
-        .next()
-        .is_some_and(|name| name.rfind('.').is_some_and(|dot| dot > 0))
+    let name = final_component.split(':').next().unwrap_or(final_component);
+    is_bare_filename(name)
+        || name
+            .rfind('.')
+            .is_some_and(|dot| dot > 0 && dot + 1 < name.len())
 }
 
 fn has_distinctive_path_punctuation(word: &str) -> bool {

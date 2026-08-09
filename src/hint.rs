@@ -300,15 +300,13 @@ enum OverlayChoice {
 
 fn overlay_pick(entries: &[HintEntry], snapshot: &str) -> Result<OverlayChoice, HintError> {
     let mut stdout = io::stdout();
-    write!(stdout, "{ANSI_HOME}{ANSI_HIDE}")?;
-    render_overlay(&mut stdout, entries, snapshot)?;
-    stdout.flush()?;
-
-    // Must use cbreak/raw on the pane TTY. Cooked mode buffers until Enter and
-    // can block forever on Esc sequence peeks — symptom: "highlighted but dead".
     let mut tty = open_tty()?;
     let _raw = RawMode::enter(tty.as_raw_fd())?;
-    let _cursor = ShowCursorOnDrop;
+    let _term = TerminalGuard::enter(&mut stdout)?;
+    let (rows, cols) = tty_size(tty.as_raw_fd()).unwrap_or((24, 80));
+    write!(stdout, "{ANSI_HOME}{ANSI_CLEAR}")?;
+    render_overlay(&mut stdout, entries, snapshot, rows, cols)?;
+    stdout.flush()?;
 
     loop {
         match read_key(&mut tty)? {
@@ -327,17 +325,29 @@ fn overlay_pick(entries: &[HintEntry], snapshot: &str) -> Result<OverlayChoice, 
 }
 
 const ESC: u8 = 0x1b;
-const ANSI_HOME: &str = "\x1b[H\x1b[J";
+const ANSI_HOME: &str = "\x1b[H";
+const ANSI_CLEAR: &str = "\x1b[J";
 const ANSI_HIDE: &str = "\x1b[?25l";
 const ANSI_SHOW: &str = "\x1b[?25h";
+const ANSI_WRAP_OFF: &str = "\x1b[?7l";
+const ANSI_WRAP_ON: &str = "\x1b[?7h";
+const ANSI_CLR_EOL: &str = "\x1b[K";
 
-/// RAII: restore cursor visibility when the overlay exits for any reason.
-struct ShowCursorOnDrop;
+/// RAII: restore cursor + wrap when the overlay exits for any reason.
+struct TerminalGuard;
 
-impl Drop for ShowCursorOnDrop {
+impl TerminalGuard {
+    fn enter(out: &mut impl Write) -> io::Result<Self> {
+        write!(out, "{ANSI_HIDE}{ANSI_WRAP_OFF}")?;
+        out.flush()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        let _ = write!(stdout, "{ANSI_SHOW}");
+        let _ = write!(stdout, "{ANSI_SHOW}{ANSI_WRAP_ON}");
         let _ = stdout.flush();
     }
 }
@@ -384,63 +394,140 @@ enum KeyPress {
     Ignore,
 }
 
-fn render_overlay(out: &mut impl Write, entries: &[HintEntry], snapshot: &str) -> io::Result<()> {
-    // Pluck-style: dim the origin snapshot and overlay the hint letter on the
-    // first character of each path token (no list under the screen).
+fn render_overlay(
+    out: &mut impl Write,
+    entries: &[HintEntry],
+    snapshot: &str,
+    rows: u16,
+    cols: u16,
+) -> io::Result<()> {
+    // Pluck-style in the exact pane geometry: wrap off, legend on last row only.
     const DIM: &str = "\x1b[2;90m";
     const RESET: &str = "\x1b[0m";
     const H_KEY: &str = "\x1b[0;1;30;48;2;255;253;1m";
     const H_TOK: &str = "\x1b[0;38;2;255;253;1m";
 
-    let mut body = snapshot.to_string();
-    let mut placed = vec![false; entries.len()];
-    let mut order: Vec<usize> = (0..entries.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(entries[i].start));
+    let rows = rows.max(2) as usize;
+    let cols = cols.max(20) as usize;
+    let content_rows = rows - 1;
 
-    for idx in order {
-        let entry = &entries[idx];
-        if entry.end > body.len() || entry.start >= entry.end {
+    let snap_lines: Vec<&str> = snapshot.lines().collect();
+    let visible = snap_lines.len().min(content_rows);
+    let offset = snap_lines.len() - visible;
+    let pad = content_rows - visible;
+
+    let mut line_starts = Vec::with_capacity(snap_lines.len() + 1);
+    let mut cursor = 0usize;
+    for line in &snap_lines {
+        line_starts.push(cursor);
+        cursor += line.len();
+        if snapshot.as_bytes().get(cursor) == Some(&b'\n') {
+            cursor += 1;
+        }
+    }
+    line_starts.push(cursor);
+
+    let mut body_lines: Vec<String> = Vec::with_capacity(content_rows);
+    for _ in 0..pad {
+        body_lines.push(String::new());
+    }
+    for line in snap_lines.iter().skip(offset) {
+        body_lines.push((*line).to_string());
+    }
+
+    let mut by_line: Vec<Vec<&HintEntry>> = vec![Vec::new(); content_rows];
+    for entry in entries {
+        let Some(abs) = line_starts
+            .windows(2)
+            .position(|w| entry.start >= w[0] && entry.start < w[1])
+        else {
+            continue;
+        };
+        if abs < offset {
             continue;
         }
-        if body.get(entry.start..entry.end) != Some(entry.raw.as_str()) {
+        let painted = pad + (abs - offset);
+        if painted < content_rows {
+            by_line[painted].push(entry);
+        }
+    }
+
+    for (row, entries_here) in by_line.iter().enumerate() {
+        if entries_here.is_empty() {
             continue;
         }
-        let rest: String = entry.raw.chars().skip(1).collect();
-        let styled = format!("{H_KEY}{}{RESET}{H_TOK}{rest}{RESET}{DIM}", entry.key);
-        body.replace_range(entry.start..entry.end, &styled);
-        placed[idx] = true;
-    }
-
-    write!(out, "{DIM}")?;
-    for line in body.lines() {
-        writeln!(out, "{line}{RESET}{DIM}")?;
-    }
-    write!(out, "{RESET}")?;
-
-    let mut extras: Vec<&HintEntry> = entries
-        .iter()
-        .zip(placed.iter())
-        .filter_map(|(entry, ok)| (!ok).then_some(entry))
-        .collect();
-    if !extras.is_empty() {
-        writeln!(out)?;
-        writeln!(
-            out,
-            "\x1b[90m(also pickable — text moved off its snapshot span)\x1b[0m"
-        )?;
-        extras.sort_by_key(|e| e.key);
-        for entry in extras {
-            let kind = target_kind_label(&entry.target);
-            writeln!(
-                out,
-                "\x1b[1;30;48;2;255;253;1m {}\x1b[0m  \x1b[38;2;255;253;1m{}\x1b[0m  \x1b[90m({kind})\x1b[0m",
-                entry.key, entry.raw
-            )?;
+        let line = &mut body_lines[row];
+        let mut ordered = entries_here.clone();
+        ordered.sort_by_key(|e| std::cmp::Reverse(e.start));
+        for entry in ordered {
+            if let Some(found) = line.find(&entry.raw) {
+                let styled = style_token(entry.key, &entry.raw, H_KEY, H_TOK, RESET, DIM);
+                line.replace_range(found..found + entry.raw.len(), &styled);
+            }
         }
     }
 
-    writeln!(out, "\x1b[90mq/Esc cancel · letter opens path\x1b[0m")?;
+    write!(out, "{ANSI_HOME}")?;
+    for line in &body_lines {
+        let truncated = truncate_cells(line, cols);
+        writeln!(out, "{DIM}{truncated}{RESET}{ANSI_CLR_EOL}")?;
+    }
+    let legend = format!(
+        " hint · {} path(s) · letter opens · q/Esc cancel",
+        entries.len()
+    );
+    let legend = truncate_cells(&legend, cols);
+    write!(
+        out,
+        "\x1b[1;30;48;2;255;253;1m{legend}{RESET}{ANSI_CLR_EOL}"
+    )?;
     Ok(())
+}
+
+fn style_token(key: char, raw: &str, h_key: &str, h_tok: &str, reset: &str, dim: &str) -> String {
+    let rest: String = raw.chars().skip(1).collect();
+    format!("{h_key}{key}{reset}{h_tok}{rest}{reset}{dim}")
+}
+
+/// Truncate to about `cols` terminal cells, ignoring CSI sequences for counting.
+fn truncate_cells(text: &str, cols: usize) -> String {
+    let mut out = String::new();
+    let mut cells = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            out.push(ch);
+            if chars.peek() == Some(&'[') {
+                out.push(chars.next().unwrap());
+                for c in chars.by_ref() {
+                    out.push(c);
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if cells >= cols {
+            break;
+        }
+        out.push(ch);
+        cells += 1;
+    }
+    out
+}
+
+fn tty_size(fd: libc::c_int) -> io::Result<(u16, u16)> {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if ws.ws_row == 0 || ws.ws_col == 0 {
+            return Err(io::Error::other("empty winsize"));
+        }
+        Ok((ws.ws_row, ws.ws_col))
+    }
 }
 
 fn open_tty() -> io::Result<fs::File> {

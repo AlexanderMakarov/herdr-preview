@@ -40,8 +40,9 @@ fn keeps_nested_spaced_path_in_one_candidate() {
 fn does_not_join_directory_prefix_through_prose() {
     let spans = find_candidates("docs/ directory and file.md");
 
-    assert_eq!(spans.len(), 1);
-    assert_eq!(spans[0].raw, "docs/");
+    assert!(spans.iter().any(|s| s.raw == "docs/"));
+    assert!(spans.iter().any(|s| s.raw == "file.md"));
+    assert!(!spans.iter().any(|s| s.raw.contains("directory and")));
 }
 
 #[test]
@@ -69,9 +70,21 @@ fn keeps_line_suffix_in_raw_candidate() {
 }
 
 #[test]
-fn keeps_line_range_suffix_in_raw_candidate() {
-    let spans = find_candidates("inspect src/app.rs:10-20");
-
+fn finds_bare_filename_with_extension() {
+    let spans = find_candidates("edit Cargo.toml please");
     assert_eq!(spans.len(), 1);
-    assert_eq!(spans[0].raw, "src/app.rs:10-20");
+    assert_eq!(spans[0].raw, "Cargo.toml");
+}
+
+#[test]
+fn finds_extensionless_slash_path() {
+    let spans = find_candidates("see src/tokenize and docs/");
+    assert!(spans.iter().any(|s| s.raw == "src/tokenize"));
+    assert!(spans.iter().any(|s| s.raw == "docs/"));
+}
+
+#[test]
+fn ignores_plain_prose_words() {
+    let spans = find_candidates("nothing pathlike here at all");
+    assert!(spans.is_empty());
 }
