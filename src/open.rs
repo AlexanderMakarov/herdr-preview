@@ -78,6 +78,7 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
     let env = format!("HERDR_FILE_VIEWER_OPEN={open_spec}");
 
     let status = Command::new(&herdr_bin)
+        .current_dir(cwd)
         .args([
             "plugin",
             "pane",
@@ -89,10 +90,9 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
             "--placement",
             "split",
             "--focus",
-            "--cwd",
+            "--env",
+            &env,
         ])
-        .arg(cwd)
-        .args(["--env", &env])
         .status()
         .map_err(|err| {
             if err.kind() == io::ErrorKind::NotFound {

@@ -38,6 +38,17 @@ done
     )
 }
 
+fn log_args_stub_with_pwd(log: &Path) -> String {
+    format!(
+        r#"printf 'META:PWD=%s' "$PWD" >>"{}"
+printf '\0' >>"{}"
+{body}"#,
+        log.display(),
+        log.display(),
+        body = log_args_stub(log)
+    )
+}
+
 fn bash_stub_header() -> &'static str {
     "#!/bin/bash\n"
 }
@@ -190,7 +201,16 @@ exit 0
 #[test]
 fn open_file_viewer_summons_fv_with_open_env() {
     let root = temp_fixture("fv-open");
-    let herdr = fake_herdr(&root);
+    let log = stub_log_path(&root);
+    let herdr = root.join("herdr");
+    write_executable(
+        &herdr,
+        &format!(
+            "{header}{body}exit 0\n",
+            header = bash_stub_header(),
+            body = log_args_stub_with_pwd(&log)
+        ),
+    );
     let _gh = fake_gh(&root);
     let cwd = root.join("repo");
     fs::create_dir_all(&cwd).unwrap();
@@ -203,7 +223,8 @@ fn open_file_viewer_summons_fv_with_open_env() {
     let invocations = read_invocations(&stub_log_path(&root));
     assert_eq!(invocations.len(), 1);
     let args = &invocations[0];
-    assert_eq!(args[0], herdr.to_string_lossy());
+    assert_eq!(args[0], format!("META:PWD={}", cwd.display()));
+    assert_eq!(args[1], herdr.to_string_lossy());
     assert!(args.windows(2).any(|w| w == ["plugin", "pane"]));
     assert!(args.windows(2).any(|w| w == ["pane", "open"]));
     assert!(args.contains(&"--plugin".to_string()));
@@ -214,8 +235,7 @@ fn open_file_viewer_summons_fv_with_open_env() {
     assert!(args
         .windows(2)
         .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
-    assert!(args.contains(&"--cwd".to_string()));
-    assert!(args.contains(&cwd.to_string_lossy().to_string()));
+    assert!(!args.contains(&"--cwd".to_string()));
     assert!(!root.join("gh.log").exists());
 }
 
