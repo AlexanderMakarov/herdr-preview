@@ -1,16 +1,14 @@
 # herdr-preview
 
-Opening a path (often Markdown) that an agent printed in a Herdr pane — plans, logs, error output — takes too many steps: copy the path, leave the flow, summon a viewer, find the file, jump to the line. **herdr-preview** is a Herdr plugin that cuts that to two keystrokes: `prefix+/`, then one letter over the path you want.
+Opening a path that appears in a Herdr pane — plans, logs, error output — takes too many steps: copy the path, leave the flow, summon a viewer, find the file, jump to the line. **herdr-preview** is a Herdr plugin that cuts that to two keystrokes: `prefix+/`, then one letter over the path you want.
 
 ## How to use
 
-1. Install the plugin and bind `prefix+/` (see [Install](#install)). Note: Herdr’s default `prefix+v` is vertical split — do not reuse it.
-2. Letter hints appear **in place** over path-like spans in the **visible** pane text only (http(s) is not hinted — use Ctrl+click for the browser; a bare prompt with no paths is a no-op toast).
+1. Install the plugin and bind `prefix+/` (see [Install](#install)).
+2. All file paths in the visible pane text are highlighted with letter hints so you can preview them. If nothing openable is on screen, you get a short notice.
 3. Press a letter to open the pick:
    - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it).
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
-
-This plugin does **not** register `[[link_handlers]]` and must not steal Ctrl+click for GitHub PRs (`gh` / GraphQL noise in the terminal).
 
 ## Install
 
@@ -38,12 +36,10 @@ Add to `~/.config/herdr/config.toml`:
 key = "prefix+/"
 type = "plugin_action"
 command = "herdr-preview.hint"
-description = "hint-pick paths and URLs on screen"
+description = "hint-pick file paths on screen"
 ```
 
 Reload with `herdr server reload-config`.
-
-Native `plugin_action` bindings preserve Herdr's plugin context and avoid an extra shell hop (same pattern as [herdr-quicklook](https://github.com/dwarvesf/herdr-quicklook) and [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer)).
 
 ## Preview: file-viewer vs `less` fallback
 
@@ -66,14 +62,6 @@ Install [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) for t
 ## Platforms
 
 Linux and macOS for MVP. Windows later.
-
-## Docs for implementers / agents
-
-| Doc | Purpose |
-| --- | --- |
-| [AGENTS.md](AGENTS.md) | How to start an agent session on this repo |
-| [docs/superpowers/specs/2026-08-09-herdr-preview-design.md](docs/superpowers/specs/2026-08-09-herdr-preview-design.md) | Approved design + full brainstorm Q&A |
-| [docs/superpowers/plans/2026-08-09-herdr-preview.md](docs/superpowers/plans/2026-08-09-herdr-preview.md) | Implementation plan (task-by-task) |
 
 ## License
 

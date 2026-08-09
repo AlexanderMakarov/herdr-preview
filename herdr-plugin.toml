@@ -7,7 +7,7 @@
 id = "herdr-preview"
 name = "herdr-preview"
 version = "0.1.0"
-description = "Hint-pick paths and URLs from visible pane text; preview via file-viewer or less."
+description = "Hint-pick file paths from visible pane text; preview via file-viewer or less."
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 
