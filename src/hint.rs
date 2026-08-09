@@ -21,6 +21,9 @@ pub const HINT_KEYS: &str = "asdfghjklwertyuiopzxcvbnm";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintEntry {
     pub key: char,
+    /// Byte offset into the origin snapshot (`visible_text`).
+    pub start: usize,
+    pub end: usize,
     pub raw: String,
     pub target: Target,
 }
@@ -64,17 +67,24 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
     let mut entries = Vec::new();
     let mut seen = Vec::new();
 
-    for Span { raw, .. } in find_candidates(text) {
+    for Span { start, end, raw } in find_candidates(text) {
         if seen.iter().any(|existing| existing == &raw) {
             continue;
         }
         let target = classify(&raw, cwd);
-        if matches!(target, Target::Missing { .. }) {
+        // MVP overlay is filesystem paths only; http(s) stays Ctrl+click → browser.
+        if matches!(target, Target::Missing { .. } | Target::Url(_)) {
             continue;
         }
         seen.push(raw.clone());
         if let Some(key) = hint_key_for_index(entries.len()) {
-            entries.push(HintEntry { key, raw, target });
+            entries.push(HintEntry {
+                key,
+                start,
+                end,
+                raw,
+                target,
+            });
         } else {
             break;
         }
@@ -195,8 +205,8 @@ pub fn serialize_entries(entries: &[HintEntry]) -> String {
         let open_spec = open_spec_for_target(&entry.target);
         let path = path_for_target(&entry.target);
         out.push_str(&format!(
-            "{}\t{}\t{kind}\t{open_spec}\t{path}\n",
-            entry.key, entry.raw
+            "{}\t{}\t{}\t{}\t{kind}\t{open_spec}\t{path}\n",
+            entry.key, entry.start, entry.end, entry.raw
         ));
     }
     out
@@ -216,8 +226,8 @@ pub fn parse_entries_tsv(data: &str) -> Result<Vec<HintEntry>, HintError> {
         if line.trim().is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(5, '\t').collect();
-        if parts.len() < 5 {
+        let parts: Vec<&str> = line.splitn(7, '\t').collect();
+        if parts.len() < 7 {
             return Err(HintError::OverlayEnv(format!(
                 "bad targets line: {line}"
             )));
@@ -226,10 +236,16 @@ pub fn parse_entries_tsv(data: &str) -> Result<Vec<HintEntry>, HintError> {
             .chars()
             .next()
             .ok_or_else(|| HintError::OverlayEnv("empty key".into()))?;
-        let raw = parts[1].to_string();
-        let kind = parts[2];
-        let open_spec = parts[3].to_string();
-        let path = parts[4];
+        let start: usize = parts[1]
+            .parse()
+            .map_err(|_| HintError::OverlayEnv(format!("bad start: {}", parts[1])))?;
+        let end: usize = parts[2]
+            .parse()
+            .map_err(|_| HintError::OverlayEnv(format!("bad end: {}", parts[2])))?;
+        let raw = parts[3].to_string();
+        let kind = parts[4];
+        let open_spec = parts[5].to_string();
+        let path = parts[6];
         let target = match kind {
             "file" => Target::File {
                 path: PathBuf::from(path),
@@ -244,7 +260,13 @@ pub fn parse_entries_tsv(data: &str) -> Result<Vec<HintEntry>, HintError> {
                 return Err(HintError::OverlayEnv(format!("unknown kind: {other}")));
             }
         };
-        entries.push(HintEntry { key, raw, target });
+        entries.push(HintEntry {
+            key,
+            start,
+            end,
+            raw,
+            target,
+        });
     }
     Ok(entries)
 }
@@ -363,22 +385,61 @@ enum KeyPress {
 }
 
 fn render_overlay(out: &mut impl Write, entries: &[HintEntry], snapshot: &str) -> io::Result<()> {
-    writeln!(out, "\x1b[2;90mherdr-preview hint\x1b[0m  \x1b[90mq/Esc cancel\x1b[0m")?;
-    writeln!(out)?;
-    // Show as much of the origin snapshot as fits; this is the user's screen,
-    // not a truncated preview of a different pane.
-    for line in snapshot.lines() {
-        writeln!(out, "\x1b[2;90m{line}\x1b[0m")?;
+    // Pluck-style: dim the origin snapshot and overlay the hint letter on the
+    // first character of each path token (no list under the screen).
+    const DIM: &str = "\x1b[2;90m";
+    const RESET: &str = "\x1b[0m";
+    const H_KEY: &str = "\x1b[0;1;30;48;2;255;253;1m";
+    const H_TOK: &str = "\x1b[0;38;2;255;253;1m";
+
+    let mut body = snapshot.to_string();
+    let mut placed = vec![false; entries.len()];
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(entries[i].start));
+
+    for idx in order {
+        let entry = &entries[idx];
+        if entry.end > body.len() || entry.start >= entry.end {
+            continue;
+        }
+        if body.get(entry.start..entry.end) != Some(entry.raw.as_str()) {
+            continue;
+        }
+        let rest: String = entry.raw.chars().skip(1).collect();
+        let styled = format!("{H_KEY}{}{RESET}{H_TOK}{rest}{RESET}{DIM}", entry.key);
+        body.replace_range(entry.start..entry.end, &styled);
+        placed[idx] = true;
     }
-    writeln!(out)?;
-    for entry in entries {
-        let kind = target_kind_label(&entry.target);
+
+    write!(out, "{DIM}")?;
+    for line in body.lines() {
+        writeln!(out, "{line}{RESET}{DIM}")?;
+    }
+    write!(out, "{RESET}")?;
+
+    let mut extras: Vec<&HintEntry> = entries
+        .iter()
+        .zip(placed.iter())
+        .filter_map(|(entry, ok)| (!ok).then_some(entry))
+        .collect();
+    if !extras.is_empty() {
+        writeln!(out)?;
         writeln!(
             out,
-            "\x1b[1;30;48;2;255;253;1m {}\x1b[0m  \x1b[38;2;255;253;1m{}\x1b[0m  \x1b[90m({kind})\x1b[0m",
-            entry.key, entry.raw
+            "\x1b[90m(also pickable — text moved off its snapshot span)\x1b[0m"
         )?;
+        extras.sort_by_key(|e| e.key);
+        for entry in extras {
+            let kind = target_kind_label(&entry.target);
+            writeln!(
+                out,
+                "\x1b[1;30;48;2;255;253;1m {}\x1b[0m  \x1b[38;2;255;253;1m{}\x1b[0m  \x1b[90m({kind})\x1b[0m",
+                entry.key, entry.raw
+            )?;
+        }
     }
+
+    writeln!(out, "\x1b[90mq/Esc cancel · letter opens path\x1b[0m")?;
     Ok(())
 }
 
@@ -515,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn build_entries_skips_missing_and_assigns_keys() {
+    fn build_entries_skips_missing_urls_and_assigns_keys() {
         let root = temp_fixture("build");
         let cwd = root.join("repo");
         fs::create_dir_all(cwd.join("src")).unwrap();
@@ -524,25 +585,23 @@ mod tests {
         let text = "see src/app.rs and src/missing.rs\nhttps://example.com\n";
         let entries = build_entries(text, &cwd);
 
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key, 'a');
         assert_eq!(entries[0].raw, "src/app.rs");
         assert!(matches!(entries[0].target, Target::File { .. }));
-        assert_eq!(entries[1].key, 's');
-        assert_eq!(entries[1].raw, "https://example.com");
-        assert!(matches!(entries[1].target, Target::Url(_)));
+        assert!(entries[0].end > entries[0].start);
     }
 
     #[test]
     fn format_list_emits_tsv_rows() {
         let root = temp_fixture("format");
         let cwd = root.join("repo");
-        fs::create_dir_all(&cwd).unwrap();
-        let entries = build_entries("https://example.com\n", &cwd);
+        fs::create_dir_all(cwd.join("src")).unwrap();
+        fs::write(cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
+        let entries = build_entries("src/app.rs\n", &cwd);
         let list = format_list(&entries);
-        assert!(list.starts_with(
-            "a\thttps://example.com\turl\thttps://example.com\thttps://example.com\n"
-        ));
+        assert!(list.contains("\tsrc/app.rs\tfile\t"));
+        assert!(list.starts_with("a\t"));
     }
 
     #[test]
@@ -567,6 +626,8 @@ mod tests {
 
         let file = HintEntry {
             key: 'a',
+            start: 0,
+            end: 4,
             raw: "a.rs".into(),
             target: Target::File {
                 path: PathBuf::from("a.rs"),
@@ -575,6 +636,8 @@ mod tests {
         };
         let dir = HintEntry {
             key: 's',
+            start: 0,
+            end: 5,
             raw: "docs/".into(),
             target: Target::Dir {
                 path: PathBuf::from("docs"),
@@ -583,6 +646,8 @@ mod tests {
         };
         let url = HintEntry {
             key: 'd',
+            start: 0,
+            end: 9,
             raw: "https://x".into(),
             target: Target::Url("https://x".into()),
         };

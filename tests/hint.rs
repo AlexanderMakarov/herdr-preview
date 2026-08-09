@@ -14,7 +14,7 @@ fn temp_fixture(name: &str) -> PathBuf {
 }
 
 #[test]
-fn headless_list_mode_prints_targets() {
+fn headless_list_mode_prints_path_targets_not_urls() {
     let root = temp_fixture("list");
     let cwd = root.join("repo");
     fs::create_dir_all(cwd.join("docs")).unwrap();
@@ -24,7 +24,7 @@ fn headless_list_mode_prints_targets() {
     let output = run_hint_list(text, &cwd).expect("list");
 
     assert!(output.contains("docs/plan.md"));
-    assert!(output.contains("https://github.com/org/repo/pull/1"));
+    assert!(!output.contains("https://github.com/org/repo/pull/1"));
     assert!(!output.contains("missing.md"));
 }
 
@@ -55,8 +55,10 @@ fn hint_keys_are_unique_and_exclude_cancel() {
 fn serialize_matches_format_list() {
     let root = temp_fixture("serialize");
     let cwd = root.join("repo");
-    fs::create_dir_all(&cwd).unwrap();
-    let text = "https://example.com\n";
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::write(cwd.join("src/a.rs"), "x\n").unwrap();
+    let text = "src/a.rs\n";
     let entries = build_entries(text, &cwd);
+    assert!(!entries.is_empty());
     assert_eq!(serialize_entries(&entries), format_list(&entries));
 }

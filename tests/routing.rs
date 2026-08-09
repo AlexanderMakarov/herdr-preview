@@ -190,6 +190,8 @@ fn with_env<F: FnOnce()>(root: &Path, herdr: &Path, f: F) {
 fn file_entry(path: &Path, open_spec: &str) -> HintEntry {
     HintEntry {
         key: 'a',
+        start: 0,
+        end: open_spec.len(),
         raw: open_spec.to_string(),
         target: Target::File {
             path: path.to_path_buf(),
@@ -201,6 +203,8 @@ fn file_entry(path: &Path, open_spec: &str) -> HintEntry {
 fn dir_entry(path: &Path, open_spec: &str) -> HintEntry {
     HintEntry {
         key: 'a',
+        start: 0,
+        end: open_spec.len(),
         raw: format!("{}/", path.display()),
         target: Target::Dir {
             path: path.to_path_buf(),
@@ -212,6 +216,8 @@ fn dir_entry(path: &Path, open_spec: &str) -> HintEntry {
 fn url_entry(url: &str) -> HintEntry {
     HintEntry {
         key: 'a',
+        start: 0,
+        end: url.len(),
         raw: url.to_string(),
         target: Target::Url(url.to_string()),
     }

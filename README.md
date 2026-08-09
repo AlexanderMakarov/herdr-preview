@@ -5,11 +5,10 @@ Opening a path (often Markdown) that an agent printed in a Herdr pane — plans,
 ## How to use
 
 1. Install the plugin and bind `prefix+/` (see [Install](#install)). Note: Herdr’s default `prefix+v` is vertical split — do not reuse it.
-2. Letter hints appear over path-like spans and URLs in the **visible** pane text only.
+2. Letter hints appear **in place** over path-like spans in the **visible** pane text only (http(s) is not hinted — use Ctrl+click for the browser; a bare prompt with no paths is a no-op toast).
 3. Press a letter to open the pick:
-   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (focused split; `q` closes it).
+   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it).
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
-   - **`http(s)` URL** → your system browser only.
 
 This plugin does **not** register `[[link_handlers]]` and must not steal Ctrl+click for GitHub PRs (`gh` / GraphQL noise in the terminal).
 
