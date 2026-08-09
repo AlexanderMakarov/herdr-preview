@@ -403,8 +403,12 @@ fn render_overlay(
     rows: u16,
     cols: u16,
 ) -> io::Result<()> {
-    // Pluck-style: top-align like the real pane (empty rows stay at the bottom).
-    // Legend overwrites the last physical row — do not reserve a row that shifts content.
+    // Match quicklook hint-pane geometry:
+    // - Prefer bottom-align when the snap is shorter than the overlay (origin panes
+    //   often report viewport_rows = N but visible text has N-1 lines; top-align
+    //   floats content one row high).
+    // - When the snap is taller, keep the bottom rows (border/resize mismatch).
+    // - Legend overwrites the last physical row (no extra newline that scrolls).
     const DIM: &str = "\x1b[2;90m";
     const RESET: &str = "\x1b[0m";
     const H_KEY: &str = "\x1b[0;1;30;48;2;255;253;1m";
@@ -413,11 +417,16 @@ fn render_overlay(
     let rows = rows.max(2) as usize;
     let cols = cols.max(20) as usize;
 
-    let snap_lines: Vec<&str> = snapshot.lines().collect();
-    // Visible text from `pane read` is already the on-screen buffer, top-first.
-    // Take the first `rows` lines (trim if longer); pad empty lines at the bottom.
-    let take = snap_lines.len().min(rows);
-    let mut line_starts = Vec::with_capacity(snap_lines.len() + 1);
+    // Preserve empty lines the way bash `while read` does (not str::lines(),
+    // which drops a final empty after a trailing newline equally in both, but
+    // keep middle blanks explicitly).
+    let snap_lines = split_snapshot_lines(snapshot);
+    let total = snap_lines.len();
+    let offset = total.saturating_sub(rows);
+    let visible = total - offset;
+    let pad = rows.saturating_sub(visible);
+
+    let mut line_starts = Vec::with_capacity(total + 1);
     let mut cursor = 0usize;
     for line in &snap_lines {
         line_starts.push(cursor);
@@ -428,14 +437,14 @@ fn render_overlay(
     }
     line_starts.push(cursor);
 
-    let mut body_lines: Vec<String> = snap_lines
-        .iter()
-        .take(take)
-        .map(|line| (*line).to_string())
-        .collect();
-    while body_lines.len() < rows {
+    let mut body_lines: Vec<String> = Vec::with_capacity(rows);
+    for _ in 0..pad {
         body_lines.push(String::new());
     }
+    for line in snap_lines.iter().skip(offset) {
+        body_lines.push(line.clone());
+    }
+    debug_assert_eq!(body_lines.len(), rows);
 
     let mut by_line: Vec<Vec<&HintEntry>> = vec![Vec::new(); rows];
     for entry in entries {
@@ -445,8 +454,12 @@ fn render_overlay(
         else {
             continue;
         };
-        if abs < take {
-            by_line[abs].push(entry);
+        if abs < offset {
+            continue;
+        }
+        let painted = pad + (abs - offset);
+        if painted < rows {
+            by_line[painted].push(entry);
         }
     }
 
@@ -465,7 +478,8 @@ fn render_overlay(
         }
     }
 
-    // Paint all but the last row; legend replaces the last physical row in place.
+    // Paint rows-1 body lines with writeln, then legend without a trailing
+    // newline (a final newline alone scrolls a full-height frame up by one).
     write!(out, "{ANSI_HOME}")?;
     for line in body_lines.iter().take(rows.saturating_sub(1)) {
         let truncated = truncate_cells(line, cols);
@@ -481,6 +495,15 @@ fn render_overlay(
         "\x1b[1;30;48;2;255;253;1m{legend}{RESET}{ANSI_CLR_EOL}"
     )?;
     Ok(())
+}
+
+/// Split snapshot text into lines, keeping middle empty rows (bash `read` style).
+fn split_snapshot_lines(snapshot: &str) -> Vec<String> {
+    let mut lines: Vec<String> = snapshot.split('\n').map(str::to_string).collect();
+    if snapshot.ends_with('\n') {
+        let _ = lines.pop();
+    }
+    lines
 }
 
 fn style_token(key: char, raw: &str, h_key: &str, h_tok: &str, reset: &str, dim: &str) -> String {
