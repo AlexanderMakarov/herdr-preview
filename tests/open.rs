@@ -146,39 +146,34 @@ fn with_path_only<F: FnOnce()>(root: &Path, f: F) {
 fn detect_file_viewer_true_when_plugin_listed() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let root = temp_fixture("detect-true");
-    let herdr = fake_herdr(&root);
-    let plugin_list = root.join("herdr-plugin-list");
-    write_executable(
-        &plugin_list,
-        r#"#!/bin/bash
-cat <<'EOF'
-2 plugins installed:
-- herdr-file-viewer (herdr-file-viewer) enabled
-- other-plugin (other) enabled
-EOF
-"#,
-    );
+    let herdr = root.join("herdr");
+    // Inline the list body — nested `exec` of another stub was flaky on CI.
     write_executable(
         &herdr,
-        &format!(
-            r#"#!/bin/bash
+        r#"#!/bin/bash
 if [ "$1" = plugin ] && [ "$2" = list ]; then
-  exec "{plugin_list}"
+  printf '%s\n' \
+    '2 plugins installed:' \
+    '- herdr-file-viewer (herdr-file-viewer) enabled' \
+    '- other-plugin (other) enabled'
+  exit 0
 fi
-{body}exit 0
+echo "unexpected: $*" >&2
+exit 1
 "#,
-            plugin_list = plugin_list.display(),
-            body = log_args_stub(&stub_log_path(&root))
-        ),
     );
 
-    assert!(detect_file_viewer(&herdr));
+    assert!(
+        detect_file_viewer(&herdr),
+        "expected herdr-file-viewer detection from stub plugin list"
+    );
 }
 
 #[test]
 fn detect_file_viewer_false_when_absent() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let root = temp_fixture("detect-false");
-    let herdr = fake_herdr(&root);
+    let herdr = root.join("herdr");
     write_executable(
         &herdr,
         r#"#!/bin/bash

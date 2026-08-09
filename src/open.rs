@@ -21,8 +21,20 @@ pub fn detect_file_viewer(herdr_bin: &Path) -> bool {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .any(|line| line.contains("herdr-file-viewer") && line.starts_with('-'))
+    text.lines().any(plugin_list_line_is_file_viewer)
+}
+
+fn plugin_list_line_is_file_viewer(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    // Plain `herdr plugin list` lines look like:
+    //   - herdr-file-viewer (herdr-file-viewer) enabled
+    let body = trimmed
+        .strip_prefix('-')
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    body.split_whitespace()
+        .next()
+        .is_some_and(|name| name == "herdr-file-viewer")
 }
 
 fn resolve_herdr_bin() -> PathBuf {
@@ -394,7 +406,7 @@ pub fn open_less(path: &Path, line: Option<u32>, herdr_bin: &Path) -> io::Result
 
 #[cfg(test)]
 mod tests {
-    use super::split_open_spec;
+    use super::{plugin_list_line_is_file_viewer, split_open_spec};
 
     #[test]
     fn split_open_spec_keeps_line_and_range() {
@@ -402,5 +414,21 @@ mod tests {
         assert_eq!(split_open_spec("src/a.rs:10-20"), ("src/a.rs", ":10-20"));
         assert_eq!(split_open_spec("src/a.rs"), ("src/a.rs", ""));
         assert_eq!(split_open_spec("/tmp/x:note"), ("/tmp/x:note", ""));
+    }
+
+    #[test]
+    fn plugin_list_detection_accepts_common_list_shapes() {
+        assert!(plugin_list_line_is_file_viewer(
+            "- herdr-file-viewer (herdr-file-viewer) enabled"
+        ));
+        assert!(plugin_list_line_is_file_viewer(
+            "  - herdr-file-viewer (herdr-file-viewer) enabled"
+        ));
+        assert!(!plugin_list_line_is_file_viewer(
+            "- other-plugin (other) enabled"
+        ));
+        assert!(!plugin_list_line_is_file_viewer(
+            "note: see herdr-file-viewer docs"
+        ));
     }
 }
