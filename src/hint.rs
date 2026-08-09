@@ -403,7 +403,8 @@ fn render_overlay(
     rows: u16,
     cols: u16,
 ) -> io::Result<()> {
-    // Pluck-style in the exact pane geometry: wrap off, legend on last row only.
+    // Pluck-style: top-align like the real pane (empty rows stay at the bottom).
+    // Legend overwrites the last physical row — do not reserve a row that shifts content.
     const DIM: &str = "\x1b[2;90m";
     const RESET: &str = "\x1b[0m";
     const H_KEY: &str = "\x1b[0;1;30;48;2;255;253;1m";
@@ -411,13 +412,11 @@ fn render_overlay(
 
     let rows = rows.max(2) as usize;
     let cols = cols.max(20) as usize;
-    let content_rows = rows - 1;
 
     let snap_lines: Vec<&str> = snapshot.lines().collect();
-    let visible = snap_lines.len().min(content_rows);
-    let offset = snap_lines.len() - visible;
-    let pad = content_rows - visible;
-
+    // Visible text from `pane read` is already the on-screen buffer, top-first.
+    // Take the first `rows` lines (trim if longer); pad empty lines at the bottom.
+    let take = snap_lines.len().min(rows);
     let mut line_starts = Vec::with_capacity(snap_lines.len() + 1);
     let mut cursor = 0usize;
     for line in &snap_lines {
@@ -429,15 +428,16 @@ fn render_overlay(
     }
     line_starts.push(cursor);
 
-    let mut body_lines: Vec<String> = Vec::with_capacity(content_rows);
-    for _ in 0..pad {
+    let mut body_lines: Vec<String> = snap_lines
+        .iter()
+        .take(take)
+        .map(|line| (*line).to_string())
+        .collect();
+    while body_lines.len() < rows {
         body_lines.push(String::new());
     }
-    for line in snap_lines.iter().skip(offset) {
-        body_lines.push((*line).to_string());
-    }
 
-    let mut by_line: Vec<Vec<&HintEntry>> = vec![Vec::new(); content_rows];
+    let mut by_line: Vec<Vec<&HintEntry>> = vec![Vec::new(); rows];
     for entry in entries {
         let Some(abs) = line_starts
             .windows(2)
@@ -445,12 +445,8 @@ fn render_overlay(
         else {
             continue;
         };
-        if abs < offset {
-            continue;
-        }
-        let painted = pad + (abs - offset);
-        if painted < content_rows {
-            by_line[painted].push(entry);
+        if abs < take {
+            by_line[abs].push(entry);
         }
     }
 
@@ -469,8 +465,9 @@ fn render_overlay(
         }
     }
 
+    // Paint all but the last row; legend replaces the last physical row in place.
     write!(out, "{ANSI_HOME}")?;
-    for line in &body_lines {
+    for line in body_lines.iter().take(rows.saturating_sub(1)) {
         let truncated = truncate_cells(line, cols);
         writeln!(out, "{DIM}{truncated}{RESET}{ANSI_CLR_EOL}")?;
     }
