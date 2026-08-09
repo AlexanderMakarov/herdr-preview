@@ -238,7 +238,7 @@ fn fv_listed_routes_file_to_file_viewer_open_env() {
             route_entry(&file_entry(&file, "src/app.rs:42"), &herdr),
             OpenRoute::FileViewer
         );
-        open_entry(&file_entry(&file, "src/app.rs:42"), &cwd).expect("open_entry");
+        open_entry(&file_entry(&file, "src/app.rs:42"), &cwd, None).expect("open_entry");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
@@ -275,7 +275,7 @@ fn fv_absent_routes_file_to_less_overlay() {
     with_env(&root, &herdr, || {
         let entry = file_entry(&file, "doc.md:10");
         assert_eq!(route_entry(&entry, &herdr), OpenRoute::Less);
-        open_entry(&entry, &cwd).expect("open_entry");
+        open_entry(&entry, &cwd, None).expect("open_entry");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
@@ -313,12 +313,17 @@ fn fv_absent_skips_directory_with_notice() {
 
     with_env(&root, &herdr, || {
         assert_eq!(route_entry(&entry, &herdr), OpenRoute::DirSkip);
-        open_entry(&entry, &cwd).expect("open_entry");
+        open_entry(&entry, &cwd, None).expect("open_entry");
     });
 
+    let invocations = read_invocations(&stub_log_path(&root));
     assert!(
-        !stub_log_path(&root).exists(),
-        "herdr should not be summoned for directory without FV"
+        invocations.iter().all(|args| {
+            args.windows(2).any(|w| w == ["notification", "show"])
+                && !args.contains(&"less".to_string())
+                && !args.contains(&"herdr-file-viewer".to_string())
+        }),
+        "directory skip may toast, but must not open less/FV: {invocations:?}"
     );
     assert!(DIR_SKIP_NOTICE.contains("directories need herdr-file-viewer"));
 }
@@ -336,7 +341,7 @@ fn url_routes_to_browser_helper_only() {
     with_env(&root, &herdr, || {
         let entry = url_entry("https://github.com/org/repo/pull/1");
         assert_eq!(route_entry(&entry, &herdr), OpenRoute::Browser);
-        open_entry(&entry, &cwd).expect("open_entry");
+        open_entry(&entry, &cwd, None).expect("open_entry");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));

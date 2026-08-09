@@ -25,8 +25,14 @@ where
 {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let old = std::env::var_os("HERDR_BIN_PATH");
+    let old_ctx = std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON");
     std::env::set_var("HERDR_BIN_PATH", herdr);
+    std::env::remove_var("HERDR_PLUGIN_CONTEXT_JSON");
     let result = f();
+    match old_ctx {
+        Some(value) => std::env::set_var("HERDR_PLUGIN_CONTEXT_JSON", value),
+        None => std::env::remove_var("HERDR_PLUGIN_CONTEXT_JSON"),
+    }
     match old {
         Some(value) => std::env::set_var("HERDR_BIN_PATH", value),
         None => std::env::remove_var("HERDR_BIN_PATH"),
@@ -163,4 +169,48 @@ exit 1
             );
         }
     }
+}
+
+#[test]
+fn read_focused_snapshot_prefers_plugin_context_over_pane_current() {
+    let root = temp_fixture("context");
+    let herdr = root.join("herdr");
+    write_executable(
+        &herdr,
+        r#"#!/bin/bash
+# pane current would lie — context must win
+if [ "$1" = pane ] && [ "$2" = current ]; then
+  printf '%s\n' '{"result":{"pane":{"pane_id":"WRONG","cwd":"/wrong"}}}'
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = read ] && [ "$3" = "w9:agent" ]; then
+  printf '%s' 'agent pane: docs/plan.md\n'
+  exit 0
+fi
+echo "unexpected: $*" >&2
+exit 1
+"#,
+    );
+
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let old = std::env::var_os("HERDR_BIN_PATH");
+    let old_ctx = std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON");
+    std::env::set_var("HERDR_BIN_PATH", &herdr);
+    std::env::set_var(
+        "HERDR_PLUGIN_CONTEXT_JSON",
+        r#"{"focused_pane_id":"w9:agent","focused_pane_cwd":"/tmp/agent-repo"}"#,
+    );
+    let snapshot = read_focused_snapshot().expect("snapshot");
+    match old_ctx {
+        Some(value) => std::env::set_var("HERDR_PLUGIN_CONTEXT_JSON", value),
+        None => std::env::remove_var("HERDR_PLUGIN_CONTEXT_JSON"),
+    }
+    match old {
+        Some(value) => std::env::set_var("HERDR_BIN_PATH", value),
+        None => std::env::remove_var("HERDR_BIN_PATH"),
+    }
+
+    assert_eq!(snapshot.pane_id, "w9:agent");
+    assert_eq!(snapshot.cwd, PathBuf::from("/tmp/agent-repo"));
+    assert!(snapshot.visible_text.contains("docs/plan.md"));
 }

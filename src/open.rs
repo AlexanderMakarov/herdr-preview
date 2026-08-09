@@ -183,15 +183,30 @@ fn parse_tab_create_pane_id(stdout: &[u8]) -> io::Result<String> {
         })
 }
 
-/// Open a path in herdr-file-viewer rooted at the origin repo/worktree.
-///
-/// Must NOT use `plugin pane open` from the hint overlay: that roots at the
-/// *focused* pane (the overlay / plugin tree). Verified pattern (quicklook):
-/// `tab create --cwd <root>` then `pane run <abs-viewer-bin>`.
-pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
-    let herdr_bin = resolve_herdr_bin();
-    let viewer = file_viewer_bin(&herdr_bin)?;
+fn focus_pane(herdr_bin: &Path, pane_id: &str) -> io::Result<()> {
+    // Herdr has no focus-by-id; FV's launcher uses zoom --on/--off to focus
+    // without leaving the pane maximized.
+    for arg in ["--on", "--off"] {
+        let status = Command::new(herdr_bin)
+            .args(["pane", "zoom", pane_id, arg])
+            .status()
+            .map_err(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+                } else {
+                    err
+                }
+            })?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "herdr pane zoom {pane_id} {arg} exited with {status}"
+            )));
+        }
+    }
+    Ok(())
+}
 
+fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String) {
     let (path_part, suffix) = split_open_spec(open_spec);
     let candidate = if Path::new(path_part).is_absolute() {
         PathBuf::from(path_part)
@@ -209,10 +224,69 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
         .strip_prefix(&root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path_part.to_string());
-    let open_target = format!("{rel}{suffix}");
+    (root, format!("{rel}{suffix}"))
+}
+
+/// Open a path in herdr-file-viewer rooted at the origin repo/worktree.
+///
+/// `plugin pane open` follows the *focused* pane. From the hint overlay that
+/// would be the plugin tree, so we:
+/// 1. Focus the origin pane via zoom --on/--off (same as FV's own launcher)
+/// 2. `plugin pane open --placement split --direction right` with OPEN env
+///
+/// If no origin pane id is known, fall back to quicklook's outside-root
+/// pattern: `tab create --cwd <root>` + `pane run <abs-viewer-bin>`.
+pub fn open_file_viewer(
+    open_spec: &str,
+    cwd: &Path,
+    origin_pane_id: Option<&str>,
+) -> io::Result<()> {
+    let herdr_bin = resolve_herdr_bin();
+    let (root, open_target) = open_target_for_cwd(open_spec, cwd);
     let env = format!("HERDR_FILE_VIEWER_OPEN={open_target}");
 
-    let create = Command::new(&herdr_bin)
+    if let Some(origin) = origin_pane_id.filter(|id| !id.is_empty()) {
+        focus_pane(&herdr_bin, origin)?;
+        let status = Command::new(&herdr_bin)
+            .args([
+                "plugin",
+                "pane",
+                "open",
+                "--plugin",
+                "herdr-file-viewer",
+                "--entrypoint",
+                "file-viewer",
+                "--placement",
+                "split",
+                "--direction",
+                "right",
+                "--focus",
+                "--env",
+                &env,
+            ])
+            .status()
+            .map_err(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+                } else {
+                    err
+                }
+            })?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "herdr plugin pane open exited with {status}"
+            )))
+        };
+    }
+
+    open_file_viewer_via_tab(&herdr_bin, &root, &env)
+}
+
+fn open_file_viewer_via_tab(herdr_bin: &Path, root: &Path, env: &str) -> io::Result<()> {
+    let viewer = file_viewer_bin(herdr_bin)?;
+    let create = Command::new(herdr_bin)
         .args([
             "tab",
             "create",
@@ -220,7 +294,7 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
             &root.to_string_lossy(),
             "--focus",
             "--env",
-            &env,
+            env,
         ])
         .output()
         .map_err(|err| {
@@ -238,7 +312,7 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
     }
     let pane_id = parse_tab_create_pane_id(&create.stdout)?;
 
-    let status = Command::new(&herdr_bin)
+    let status = Command::new(herdr_bin)
         .args(["pane", "run", &pane_id])
         .arg(&viewer)
         .status()

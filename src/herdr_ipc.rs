@@ -2,7 +2,9 @@
 //!
 //! Pinned commands (from Herdr CLI + herdr-quicklook):
 //!
-//! 1. Focused pane id + cwd:
+//! 1. Prefer `HERDR_PLUGIN_CONTEXT_JSON` `.focused_pane_id` / `.focused_pane_cwd`
+//!    when the action is launched via a Herdr keybinding (authoritative for the
+//!    pane that owned focus when the key fired). Fall back to:
 //!    `herdr pane current` → JSON `.result.pane.pane_id` and `.result.pane.cwd`
 //! 2. Visible text only (MVP — never full scrollback / recent):
 //!    `herdr pane read <PANE_ID> --source visible --format text`
@@ -59,7 +61,7 @@ pub fn read_focused_snapshot() -> Result<PaneSnapshot, HerdrIpcError> {
 }
 
 fn read_focused_snapshot_with_bin(herdr_bin: &Path) -> Result<PaneSnapshot, HerdrIpcError> {
-    let (pane_id, cwd) = fetch_focused_pane_meta(herdr_bin)?;
+    let (pane_id, cwd) = focused_pane_meta(herdr_bin)?;
     let visible_text = fetch_visible_text(herdr_bin, &pane_id)?;
     Ok(PaneSnapshot {
         cwd,
@@ -68,7 +70,31 @@ fn read_focused_snapshot_with_bin(herdr_bin: &Path) -> Result<PaneSnapshot, Herd
     })
 }
 
-fn fetch_focused_pane_meta(herdr_bin: &Path) -> Result<(String, PathBuf), HerdrIpcError> {
+fn focused_pane_meta(herdr_bin: &Path) -> Result<(String, PathBuf), HerdrIpcError> {
+    if let Some(meta) = parse_plugin_context_meta(std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON")) {
+        return Ok(meta);
+    }
+    fetch_pane_current_meta(herdr_bin)
+}
+
+fn parse_plugin_context_meta(raw: Option<std::ffi::OsString>) -> Option<(String, PathBuf)> {
+    let raw = raw?;
+    let text = raw.to_str()?;
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let pane_id = value
+        .get("focused_pane_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let cwd = value
+        .get("focused_pane_cwd")
+        .or_else(|| value.get("workspace_cwd"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    Some((pane_id, PathBuf::from(cwd)))
+}
+
+fn fetch_pane_current_meta(herdr_bin: &Path) -> Result<(String, PathBuf), HerdrIpcError> {
     let output = Command::new(herdr_bin)
         .args(["pane", "current"])
         .output()
@@ -119,9 +145,7 @@ fn parse_pane_current(json: &str) -> Result<(String, PathBuf), HerdrIpcError> {
 
 fn fetch_visible_text(herdr_bin: &Path, pane_id: &str) -> Result<String, HerdrIpcError> {
     let output = Command::new(herdr_bin)
-        .args([
-            "pane", "read", pane_id, "--source", "visible", "--format", "text",
-        ])
+        .args(["pane", "read", pane_id, "--source", "visible", "--format", "text"])
         .output()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
@@ -144,15 +168,36 @@ fn fetch_visible_text(herdr_bin: &Path, pane_id: &str) -> Result<String, HerdrIp
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Best-effort toast; never fails the caller.
+pub fn notify(title: &str, body: &str) {
+    let herdr_bin = resolve_herdr_bin();
+    let _ = Command::new(herdr_bin)
+        .args([
+            "notification",
+            "show",
+            title,
+            "--body",
+            body,
+            "--sound",
+            "none",
+        ])
+        .status();
+}
+
 #[cfg(test)]
-mod unit {
+mod tests {
     use super::*;
 
     #[test]
-    fn parse_pane_current_extracts_id_and_cwd() {
-        let json = r#"{"result":{"pane":{"pane_id":"w9:p1","cwd":"/tmp/herdr-repo"}}}"#;
-        let (pane_id, cwd) = parse_pane_current(json).expect("parse");
-        assert_eq!(pane_id, "w9:p1");
-        assert_eq!(cwd, PathBuf::from("/tmp/herdr-repo"));
+    fn parse_plugin_context_prefers_focused_pane_fields() {
+        let raw = r#"{
+          "focused_pane_id": "w1:p2",
+          "focused_pane_cwd": "/tmp/agent-repo",
+          "workspace_cwd": "/tmp/workspace"
+        }"#;
+        let (id, cwd) =
+            parse_plugin_context_meta(Some(std::ffi::OsString::from(raw))).expect("parse");
+        assert_eq!(id, "w1:p2");
+        assert_eq!(cwd, PathBuf::from("/tmp/agent-repo"));
     }
 }

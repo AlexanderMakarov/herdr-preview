@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::classify::{classify, Target};
-use crate::herdr_ipc::{read_focused_snapshot, HerdrIpcError, PaneSnapshot};
+use crate::herdr_ipc::{notify, read_focused_snapshot, HerdrIpcError, PaneSnapshot};
 use crate::open::{detect_file_viewer, open_file_viewer, open_less, open_url};
 use crate::tokenize::{find_candidates, Span};
 
@@ -117,6 +117,10 @@ pub fn run_hint_action() -> Result<(), HintError> {
     let snapshot = read_focused_snapshot()?;
     let entries = build_entries(&snapshot.visible_text, &snapshot.cwd);
     if entries.is_empty() {
+        notify(
+            "herdr-preview",
+            "No openable paths/URLs in the visible pane text",
+        );
         return Err(HintError::NoOpenableTargets);
     }
     spawn_hint_overlay(&entries, &snapshot)
@@ -142,6 +146,7 @@ fn spawn_hint_overlay(entries: &[HintEntry], snapshot: &PaneSnapshot) -> Result<
     let targets_env = format!("HERDR_PREVIEW_HINT_TARGETS={}", targets_path.display());
     let snap_env = format!("HERDR_PREVIEW_HINT_SNAP={}", snap_path.display());
     let cwd_env = format!("HERDR_PREVIEW_HINT_CWD={}", snapshot.cwd.display());
+    let origin_env = format!("HERDR_PREVIEW_HINT_ORIGIN={}", snapshot.pane_id);
 
     let herdr_bin = resolve_herdr_bin();
     let status = Command::new(&herdr_bin)
@@ -162,6 +167,8 @@ fn spawn_hint_overlay(entries: &[HintEntry], snapshot: &PaneSnapshot) -> Result<
             &snap_env,
             "--env",
             &cwd_env,
+            "--env",
+            &origin_env,
         ])
         .status()
         .map_err(|err| {
@@ -250,6 +257,7 @@ pub fn run_hint_overlay() -> Result<(), HintError> {
     let cwd = std::env::var("HERDR_PREVIEW_HINT_CWD")
         .map(PathBuf::from)
         .map_err(|_| HintError::OverlayEnv("HERDR_PREVIEW_HINT_CWD missing".into()))?;
+    let origin_pane = std::env::var("HERDR_PREVIEW_HINT_ORIGIN").ok();
 
     let entries = parse_entries_tsv(&fs::read_to_string(&targets_path)?)?;
     let snapshot = fs::read_to_string(&snap_path)?;
@@ -257,7 +265,9 @@ pub fn run_hint_overlay() -> Result<(), HintError> {
     let choice = overlay_pick(&entries, &snapshot)?;
     match choice {
         OverlayChoice::Cancel => Ok(()),
-        OverlayChoice::Pick(index) => open_entry(&entries[index], &cwd),
+        OverlayChoice::Pick(index) => {
+            open_entry(&entries[index], &cwd, origin_pane.as_deref())
+        }
     }
 }
 
@@ -355,11 +365,10 @@ enum KeyPress {
 fn render_overlay(out: &mut impl Write, entries: &[HintEntry], snapshot: &str) -> io::Result<()> {
     writeln!(out, "\x1b[2;90mherdr-preview hint\x1b[0m  \x1b[90mq/Esc cancel\x1b[0m")?;
     writeln!(out)?;
-    for line in snapshot.lines().take(12) {
+    // Show as much of the origin snapshot as fits; this is the user's screen,
+    // not a truncated preview of a different pane.
+    for line in snapshot.lines() {
         writeln!(out, "\x1b[2;90m{line}\x1b[0m")?;
-    }
-    if snapshot.lines().count() > 12 {
-        writeln!(out, "\x1b[2;90m…\x1b[0m")?;
     }
     writeln!(out)?;
     for entry in entries {
@@ -438,7 +447,11 @@ pub fn route_entry(entry: &HintEntry, herdr_bin: &Path) -> OpenRoute {
 pub const DIR_SKIP_NOTICE: &str =
     "herdr-preview: directories need herdr-file-viewer (less is file-only)";
 
-pub fn open_entry(entry: &HintEntry, cwd: &Path) -> Result<(), HintError> {
+pub fn open_entry(
+    entry: &HintEntry,
+    cwd: &Path,
+    origin_pane_id: Option<&str>,
+) -> Result<(), HintError> {
     let herdr_bin = resolve_herdr_bin();
     match route_entry(entry, &herdr_bin) {
         OpenRoute::Browser => {
@@ -448,7 +461,7 @@ pub fn open_entry(entry: &HintEntry, cwd: &Path) -> Result<(), HintError> {
         }
         OpenRoute::FileViewer => {
             let open_spec = open_spec_for_target(&entry.target);
-            open_file_viewer(&open_spec, cwd)?;
+            open_file_viewer(&open_spec, cwd, origin_pane_id)?;
         }
         OpenRoute::Less => {
             if let Target::File { path, open_spec } = &entry.target {
@@ -458,6 +471,7 @@ pub fn open_entry(entry: &HintEntry, cwd: &Path) -> Result<(), HintError> {
         }
         OpenRoute::DirSkip => {
             eprintln!("{DIR_SKIP_NOTICE}");
+            notify("herdr-preview", DIR_SKIP_NOTICE);
         }
         OpenRoute::NoOp => {}
     }

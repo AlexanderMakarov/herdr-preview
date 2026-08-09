@@ -236,7 +236,7 @@ exit 0
 
     with_path_only(&root, || {
         std::env::set_var("HERDR_BIN_PATH", &herdr);
-        open_file_viewer("src/app.rs:42", &cwd).expect("open_file_viewer");
+        open_file_viewer("src/app.rs:42", &cwd, None).expect("open_file_viewer");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
