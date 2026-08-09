@@ -1,10 +1,10 @@
 # herdr-preview
 
-Opening a path (often Markdown) that an agent printed in a Herdr pane — plans, logs, error output — takes too many steps: copy the path, leave the flow, summon a viewer, find the file, jump to the line. **herdr-preview** is a Herdr plugin that cuts that to two keystrokes: `prefix+v`, then one letter over the path you want.
+Opening a path (often Markdown) that an agent printed in a Herdr pane — plans, logs, error output — takes too many steps: copy the path, leave the flow, summon a viewer, find the file, jump to the line. **herdr-preview** is a Herdr plugin that cuts that to two keystrokes: `prefix+/`, then one letter over the path you want.
 
 ## How to use
 
-1. Install the plugin and bind `prefix+v` (see [Install](#install)).
+1. Install the plugin and bind `prefix+/` (see [Install](#install)). Note: Herdr’s default `prefix+v` is vertical split — do not reuse it.
 2. Letter hints appear over path-like spans and URLs in the **visible** pane text only.
 3. Press a letter to open the pick:
    - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (focused split; `q` closes it).
@@ -36,7 +36,7 @@ Add to `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
-key = "prefix+v"
+key = "prefix+/"
 type = "plugin_action"
 command = "herdr-preview.hint"
 description = "hint-pick paths and URLs on screen"
