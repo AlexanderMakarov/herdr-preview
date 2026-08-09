@@ -2,6 +2,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde_json::Value;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenBackend {
     FileViewer,
@@ -73,26 +75,172 @@ pub fn open_url(url: &str) -> io::Result<()> {
     }
 }
 
+/// Split `path`, `path:N`, or `path:A-B` into (path, optional `:suffix`).
+fn split_open_spec(open_spec: &str) -> (&str, &str) {
+    if let Some((path, suffix)) = open_spec.rsplit_once(':') {
+        let ok = if let Some((a, b)) = suffix.split_once('-') {
+            !a.is_empty()
+                && !b.is_empty()
+                && a.chars().all(|c| c.is_ascii_digit())
+                && b.chars().all(|c| c.is_ascii_digit())
+        } else {
+            !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+        };
+        if ok {
+            return (path, &open_spec[path.len()..]);
+        }
+    }
+    (open_spec, "")
+}
+
+fn git_toplevel(start: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(text))
+    }
+}
+
+fn file_viewer_plugin_root(herdr_bin: &Path) -> io::Result<PathBuf> {
+    let output = Command::new(herdr_bin)
+        .args(["plugin", "list", "--json"])
+        .output()
+        .map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+            } else {
+                err
+            }
+        })?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "herdr plugin list --json exited with {}",
+            output.status
+        )));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let plugins = value
+        .pointer("/result/plugins")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "herdr plugin list --json missing result.plugins",
+            )
+        })?;
+    for plugin in plugins {
+        let id = plugin.get("plugin_id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == "herdr-file-viewer" {
+            if let Some(root) = plugin.get("plugin_root").and_then(|v| v.as_str()) {
+                if !root.is_empty() {
+                    return Ok(PathBuf::from(root));
+                }
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "herdr-file-viewer plugin_root not found",
+    ))
+}
+
+fn file_viewer_bin(herdr_bin: &Path) -> io::Result<PathBuf> {
+    let root = file_viewer_plugin_root(herdr_bin)?;
+    let bin = root.join("target/release/herdr-file-viewer");
+    if bin.is_file() {
+        Ok(bin)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("file-viewer binary missing at {}", bin.display()),
+        ))
+    }
+}
+
+fn parse_tab_create_pane_id(stdout: &[u8]) -> io::Result<String> {
+    let value: Value = serde_json::from_slice(stdout)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    value
+        .pointer("/result/root_pane/pane_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tab create response missing result.root_pane.pane_id",
+            )
+        })
+}
+
+/// Open a path in herdr-file-viewer rooted at the origin repo/worktree.
+///
+/// Must NOT use `plugin pane open` from the hint overlay: that roots at the
+/// *focused* pane (the overlay / plugin tree). Verified pattern (quicklook):
+/// `tab create --cwd <root>` then `pane run <abs-viewer-bin>`.
 pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
     let herdr_bin = resolve_herdr_bin();
-    let env = format!("HERDR_FILE_VIEWER_OPEN={open_spec}");
+    let viewer = file_viewer_bin(&herdr_bin)?;
 
-    let status = Command::new(&herdr_bin)
-        .current_dir(cwd)
+    let (path_part, suffix) = split_open_spec(open_spec);
+    let candidate = if Path::new(path_part).is_absolute() {
+        PathBuf::from(path_part)
+    } else {
+        cwd.join(path_part)
+    };
+    let abs = candidate.canonicalize().unwrap_or(candidate);
+
+    let root = git_toplevel(&abs)
+        .or_else(|| git_toplevel(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let root = root.canonicalize().unwrap_or(root);
+
+    let rel = abs
+        .strip_prefix(&root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path_part.to_string());
+    let open_target = format!("{rel}{suffix}");
+    let env = format!("HERDR_FILE_VIEWER_OPEN={open_target}");
+
+    let create = Command::new(&herdr_bin)
         .args([
-            "plugin",
-            "pane",
-            "open",
-            "--plugin",
-            "herdr-file-viewer",
-            "--entrypoint",
-            "file-viewer",
-            "--placement",
-            "split",
+            "tab",
+            "create",
+            "--cwd",
+            &root.to_string_lossy(),
             "--focus",
             "--env",
             &env,
         ])
+        .output()
+        .map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+            } else {
+                err
+            }
+        })?;
+    if !create.status.success() {
+        return Err(io::Error::other(format!(
+            "herdr tab create exited with {}",
+            create.status
+        )));
+    }
+    let pane_id = parse_tab_create_pane_id(&create.stdout)?;
+
+    let status = Command::new(&herdr_bin)
+        .args(["pane", "run", &pane_id])
+        .arg(&viewer)
         .status()
         .map_err(|err| {
             if err.kind() == io::ErrorKind::NotFound {
@@ -106,7 +254,7 @@ pub fn open_file_viewer(open_spec: &str, cwd: &Path) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "herdr plugin pane open exited with {status}"
+            "herdr pane run exited with {status}"
         )))
     }
 }
@@ -162,5 +310,18 @@ pub fn open_less(path: &Path, line: Option<u32>, herdr_bin: &Path) -> io::Result
         Err(io::Error::other(format!(
             "herdr plugin pane open exited with {status}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_open_spec;
+
+    #[test]
+    fn split_open_spec_keeps_line_and_range() {
+        assert_eq!(split_open_spec("src/a.rs:42"), ("src/a.rs", ":42"));
+        assert_eq!(split_open_spec("src/a.rs:10-20"), ("src/a.rs", ":10-20"));
+        assert_eq!(split_open_spec("src/a.rs"), ("src/a.rs", ""));
+        assert_eq!(split_open_spec("/tmp/x:note"), ("/tmp/x:note", ""));
     }
 }

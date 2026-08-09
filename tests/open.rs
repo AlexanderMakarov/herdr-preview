@@ -32,20 +32,11 @@ fn log_args_stub(log: &Path) -> String {
   printf '%s' "$arg" >>"{}"
   printf '\0' >>"{}"
 done
+printf '\0' >>"{}"
 "#,
         log.display(),
+        log.display(),
         log.display()
-    )
-}
-
-fn log_args_stub_with_pwd(log: &Path) -> String {
-    format!(
-        r#"printf 'META:PWD=%s' "$PWD" >>"{}"
-printf '\0' >>"{}"
-{body}"#,
-        log.display(),
-        log.display(),
-        body = log_args_stub(log)
     )
 }
 
@@ -199,21 +190,49 @@ exit 0
 }
 
 #[test]
-fn open_file_viewer_summons_fv_with_open_env() {
+fn open_file_viewer_roots_tab_at_cwd_then_runs_viewer_bin() {
     let root = temp_fixture("fv-open");
     let log = stub_log_path(&root);
     let herdr = root.join("herdr");
+    let plugin_root = root.join("fv-plugin");
+    let viewer_bin = plugin_root.join("target/release/herdr-file-viewer");
+    fs::create_dir_all(viewer_bin.parent().unwrap()).unwrap();
+    write_executable(&viewer_bin, "#!/bin/bash\nexit 0\n");
+
+    let list_json = format!(
+        r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
+        plugin_root.display()
+    );
     write_executable(
         &herdr,
         &format!(
-            "{header}{body}exit 0\n",
-            header = bash_stub_header(),
-            body = log_args_stub_with_pwd(&log)
+            r#"#!/bin/bash
+log={log:?}
+if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
+  printf '%s\n' '{list_json}'
+  exit 0
+fi
+if [ "$1" = tab ] && [ "$2" = create ]; then
+  {log_body}
+  printf '%s\n' '{{"result":{{"root_pane":{{"pane_id":"w1:p1"}}}}}}'
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = run ]; then
+  {log_body}
+  exit 0
+fi
+{log_body}
+exit 0
+"#,
+            log = log.display(),
+            list_json = list_json,
+            log_body = log_args_stub(&log),
         ),
     );
     let _gh = fake_gh(&root);
     let cwd = root.join("repo");
-    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::write(cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
 
     with_path_only(&root, || {
         std::env::set_var("HERDR_BIN_PATH", &herdr);
@@ -221,21 +240,22 @@ fn open_file_viewer_summons_fv_with_open_env() {
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
-    assert_eq!(invocations.len(), 1);
-    let args = &invocations[0];
-    assert_eq!(args[0], format!("META:PWD={}", cwd.display()));
-    assert_eq!(args[1], herdr.to_string_lossy());
-    assert!(args.windows(2).any(|w| w == ["plugin", "pane"]));
-    assert!(args.windows(2).any(|w| w == ["pane", "open"]));
-    assert!(args.contains(&"--plugin".to_string()));
-    assert!(args.contains(&"herdr-file-viewer".to_string()));
-    assert!(args.contains(&"--entrypoint".to_string()));
-    assert!(args.contains(&"file-viewer".to_string()));
-    assert!(args.contains(&"--focus".to_string()));
-    assert!(args
+    assert_eq!(invocations.len(), 2, "tab create + pane run: {invocations:?}");
+
+    let create = &invocations[0];
+    assert!(create.windows(2).any(|w| w == ["tab", "create"]));
+    assert!(create.contains(&"--cwd".to_string()));
+    assert!(create.contains(&cwd.canonicalize().unwrap().to_string_lossy().into_owned())
+        || create.contains(&cwd.to_string_lossy().into_owned()));
+    assert!(create.contains(&"--focus".to_string()));
+    assert!(create
         .windows(2)
         .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
-    assert!(!args.contains(&"--cwd".to_string()));
+
+    let run = &invocations[1];
+    assert!(run.windows(2).any(|w| w == ["pane", "run"]));
+    assert!(run.contains(&"w1:p1".to_string()));
+    assert!(run.contains(&viewer_bin.to_string_lossy().into_owned()));
     assert!(!root.join("gh.log").exists());
 }
 
