@@ -17,12 +17,32 @@ pub fn find_candidates(text: &str) -> Vec<Span> {
 }
 
 fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
+    // Shell/Markdown panes often wrap destinations as `[label](path)` — extract the
+    // destination before word-splitting so `docs/a.md](docs/a.md` is not one token.
+    let mut covered: Vec<(usize, usize)> = Vec::new();
+    for (dest_start, dest_end) in markdown_link_destinations(line) {
+        let dest = &line[dest_start..dest_end];
+        if is_url(dest) || is_path_start(dest) {
+            let range = text_range(line_start, dest_start, dest_end);
+            if !overlaps_any(range.0, range.1, &covered) {
+                spans.push(make_span(range, dest));
+                covered.push(range);
+            }
+        }
+    }
+
     let words = word_bounds(line);
     let mut index = 0;
 
     while index < words.len() {
         let (word_start, word_end) = trim_wrappers(line, words[index]);
         let word = &line[word_start..word_end];
+        let abs_start = line_start + word_start;
+        let abs_end = line_start + word_end;
+        if overlaps_any(abs_start, abs_end, &covered) {
+            index += 1;
+            continue;
+        }
 
         if is_url(word) {
             spans.push(make_span(
@@ -68,17 +88,57 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
                 }
             }
 
-            let raw = &line[word_start..candidate_end];
-            spans.push(make_span(
-                text_range(line_start, word_start, candidate_end),
-                raw,
-            ));
+            let range = text_range(line_start, word_start, candidate_end);
+            if !overlaps_any(range.0, range.1, &covered) {
+                let raw = &line[word_start..candidate_end];
+                spans.push(make_span(range, raw));
+                covered.push(range);
+            }
             index = consumed_through + 1;
             continue;
         }
 
         index += 1;
     }
+}
+
+/// Destinations inside Markdown inline links: `[label](dest)`.
+fn markdown_link_destinations(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let Some(close_bracket) = line[i + 1..].find(']').map(|rel| i + 1 + rel) else {
+            break;
+        };
+        let after = close_bracket + 1;
+        if after >= bytes.len() || bytes[after] != b'(' {
+            i = close_bracket + 1;
+            continue;
+        }
+        let dest_start = after + 1;
+        let Some(close_paren) = line[dest_start..].find(')').map(|rel| dest_start + rel) else {
+            break;
+        };
+        let dest = line[dest_start..close_paren].trim();
+        // Skip title-bearing destinations (`path "title"`) for MVP.
+        if !dest.is_empty() && !dest.contains([' ', '\t']) {
+            let trimmed_start = dest_start + (line[dest_start..close_paren].len() - dest.len());
+            out.push((trimmed_start, trimmed_start + dest.len()));
+        }
+        i = close_paren + 1;
+    }
+    out
+}
+
+fn overlaps_any(start: usize, end: usize, covered: &[(usize, usize)]) -> bool {
+    covered
+        .iter()
+        .any(|&(c0, c1)| start < c1 && end > c0)
 }
 
 fn word_bounds(line: &str) -> Vec<(usize, usize)> {
@@ -119,7 +179,7 @@ fn trim_wrappers(line: &str, (mut start, mut end): (usize, usize)) -> (usize, us
             .expect("non-empty slice");
         if matches!(
             character,
-            '"' | '\'' | '`' | ')' | ']' | '}' | '>' | ',' | ';' | '.'
+            '"' | '\'' | '`' | ')' | ']' | '}' | '>' | ',' | ';' | '.' | '|'
         ) {
             end -= character.len_utf8();
         } else {

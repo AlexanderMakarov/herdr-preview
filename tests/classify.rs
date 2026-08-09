@@ -163,3 +163,35 @@ fn strips_file_url_prefix_and_resolves() {
     assert_eq!(file_target_path(target.clone()), cwd.join("docs/readme.md"));
     assert_eq!(file_open_spec(target), "docs/readme.md");
 }
+
+#[test]
+fn expands_tilde_home_paths() {
+    let root = temp_fixture("tilde");
+    let home = root.join("home");
+    let cwd = root.join("cwd");
+    fs::create_dir_all(home.join("code/proj")).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(home.join("code/proj/README.md"), "# hi\n").unwrap();
+    fs::create_dir_all(home.join("scripts")).unwrap();
+
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", &home);
+
+    let file = classify("~/code/proj/README.md", &cwd);
+    let dir = classify("~/scripts/", &cwd);
+
+    match old_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(
+        file_target_path(file.clone()),
+        home.join("code/proj/README.md")
+    );
+    assert_eq!(
+        file_open_spec(file),
+        format!("{}/code/proj/README.md", home.display())
+    );
+    assert_eq!(dir_target_path(dir), home.join("scripts"));
+}

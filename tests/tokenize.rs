@@ -88,3 +88,30 @@ fn ignores_plain_prose_words() {
     let spans = find_candidates("nothing pathlike here at all");
     assert!(spans.is_empty());
 }
+
+#[test]
+fn extracts_markdown_link_destinations() {
+    let text = "| [docs/index.md](docs/index.md) | see also [setup](docs/tutorials/setup-guide.md)";
+    let spans = find_candidates(text);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(
+        raws.contains(&"docs/index.md"),
+        "expected docs/index.md in {raws:?}"
+    );
+    assert!(
+        raws.contains(&"docs/tutorials/setup-guide.md"),
+        "expected setup-guide path in {raws:?}"
+    );
+    assert!(
+        !raws.iter().any(|r| r.contains("](")),
+        "should not keep glued markdown tokens: {raws:?}"
+    );
+}
+
+#[test]
+fn finds_tilde_home_paths() {
+    let spans = find_candidates("less ~/code/llm-wiki/README.md and ~/scripts/");
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(raws.contains(&"~/code/llm-wiki/README.md"), "{raws:?}");
+    assert!(raws.contains(&"~/scripts/"), "{raws:?}");
+}

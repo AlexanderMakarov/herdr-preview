@@ -17,7 +17,7 @@ pub fn classify(raw: &str, cwd: &Path) -> Target {
 
     let path_raw = strip_file_url(raw);
     let (path_part, line_suffix) = split_line_suffix(path_raw);
-    let decoded_path = percent_decode(path_part);
+    let decoded_path = expand_tilde(&percent_decode(path_part));
     let open_spec = build_open_spec(&decoded_path, line_suffix.as_deref());
     let resolved = resolve_path(&decoded_path, cwd);
 
@@ -104,6 +104,28 @@ fn percent_decode(input: &str) -> String {
     }
 
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn expand_tilde(path: &str) -> String {
+    if path == "~" {
+        return home_dir().unwrap_or_else(|| path.to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = home_dir() {
+            return format!(
+                "{home}{}{rest}",
+                if home.ends_with('/') { "" } else { "/" }
+            );
+        }
+    }
+    path.to_string()
+}
+
+fn home_dir() -> Option<String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
