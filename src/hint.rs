@@ -329,34 +329,62 @@ fn read_key(tty: &mut fs::File) -> io::Result<u8> {
     Ok(buf[0])
 }
 
-pub fn open_entry(entry: &HintEntry, cwd: &Path) -> Result<(), HintError> {
-    let herdr_bin = resolve_herdr_bin();
-    match &entry.target {
-        Target::Url(url) => open_url(url)?,
-        Target::File { path, open_spec } => open_path_target(path, open_spec, cwd, &herdr_bin)?,
-        Target::Dir { open_spec, .. } => {
-            if detect_file_viewer(&herdr_bin) {
-                open_file_viewer(open_spec, cwd)?;
-            } else {
-                eprintln!("herdr-preview: directories need herdr-file-viewer (less is file-only)");
-            }
-        }
-        Target::Missing { .. } => {}
-    }
-    Ok(())
+/// Which opener `open_entry` will use after peer-detect (`herdr plugin list`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenRoute {
+    Browser,
+    FileViewer,
+    Less,
+    DirSkip,
+    NoOp,
 }
 
-fn open_path_target(
-    path: &Path,
-    open_spec: &str,
-    cwd: &Path,
-    herdr_bin: &Path,
-) -> Result<(), HintError> {
-    if detect_file_viewer(herdr_bin) {
-        open_file_viewer(open_spec, cwd)?;
-    } else {
-        let line = line_from_open_spec(open_spec);
-        open_less(path, line, herdr_bin)?;
+pub fn route_entry(entry: &HintEntry, herdr_bin: &Path) -> OpenRoute {
+    match &entry.target {
+        Target::Url(_) => OpenRoute::Browser,
+        Target::File { .. } => {
+            if detect_file_viewer(herdr_bin) {
+                OpenRoute::FileViewer
+            } else {
+                OpenRoute::Less
+            }
+        }
+        Target::Dir { .. } => {
+            if detect_file_viewer(herdr_bin) {
+                OpenRoute::FileViewer
+            } else {
+                OpenRoute::DirSkip
+            }
+        }
+        Target::Missing { .. } => OpenRoute::NoOp,
+    }
+}
+
+pub const DIR_SKIP_NOTICE: &str =
+    "herdr-preview: directories need herdr-file-viewer (less is file-only)";
+
+pub fn open_entry(entry: &HintEntry, cwd: &Path) -> Result<(), HintError> {
+    let herdr_bin = resolve_herdr_bin();
+    match route_entry(entry, &herdr_bin) {
+        OpenRoute::Browser => {
+            if let Target::Url(url) = &entry.target {
+                open_url(url)?;
+            }
+        }
+        OpenRoute::FileViewer => {
+            let open_spec = open_spec_for_target(&entry.target);
+            open_file_viewer(&open_spec, cwd)?;
+        }
+        OpenRoute::Less => {
+            if let Target::File { path, open_spec } = &entry.target {
+                let line = line_from_open_spec(open_spec);
+                open_less(path, line, &herdr_bin)?;
+            }
+        }
+        OpenRoute::DirSkip => {
+            eprintln!("{DIR_SKIP_NOTICE}");
+        }
+        OpenRoute::NoOp => {}
     }
     Ok(())
 }
@@ -374,6 +402,7 @@ fn line_from_open_spec(open_spec: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn temp_fixture(name: &str) -> PathBuf {
@@ -438,6 +467,41 @@ mod tests {
         assert_eq!(parsed.len(), entries.len());
         assert_eq!(parsed[0].key, entries[0].key);
         assert_eq!(parsed[0].raw, entries[0].raw);
+    }
+
+    #[test]
+    fn route_entry_picks_backend_from_target_and_peer_detect() {
+        let root = temp_fixture("route");
+        let herdr = root.join("herdr");
+        fs::write(&herdr, "#!/bin/bash\nexit 0\n").unwrap();
+        fs::set_permissions(&herdr, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let file = HintEntry {
+            key: 'a',
+            raw: "a.rs".into(),
+            target: Target::File {
+                path: PathBuf::from("a.rs"),
+                open_spec: "a.rs".into(),
+            },
+        };
+        let dir = HintEntry {
+            key: 's',
+            raw: "docs/".into(),
+            target: Target::Dir {
+                path: PathBuf::from("docs"),
+                open_spec: "docs/".into(),
+            },
+        };
+        let url = HintEntry {
+            key: 'd',
+            raw: "https://x".into(),
+            target: Target::Url("https://x".into()),
+        };
+
+        assert_eq!(route_entry(&url, &herdr), OpenRoute::Browser);
+        // herdr stub exits 0 on plugin list → no FV line → less / dir skip
+        assert_eq!(route_entry(&file, &herdr), OpenRoute::Less);
+        assert_eq!(route_entry(&dir, &herdr), OpenRoute::DirSkip);
     }
 
     #[test]
