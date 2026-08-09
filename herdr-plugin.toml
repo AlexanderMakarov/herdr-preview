@@ -1,0 +1,34 @@
+# herdr-plugin.toml — manifest for herdr-preview.
+#
+# Hint overlay on visible pane text; opens picks in herdr-file-viewer when
+# installed, otherwise `less` in an overlay. http(s) → system browser.
+# No link_handlers — never hijack Ctrl+click on git URLs.
+
+id = "herdr-preview"
+name = "herdr-preview"
+version = "0.1.0"
+description = "Hint-pick paths and URLs from visible pane text; preview via file-viewer or less."
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[panes]]
+id = "hint-overlay"
+title = "Hint"
+placement = "overlay"
+command = ["./target/release/herdr-preview", "hint-overlay"]
+
+[[panes]]
+id = "less"
+title = "Preview"
+placement = "overlay"
+command = ["bash", "scripts/less-pane.sh"]
+
+[[actions]]
+id = "hint"
+platforms = ["linux", "macos"]
+title = "Hint-pick openable tokens on screen"
+description = "Overlay letter hints on path-like and URL spans in the visible pane; press a key to open."
+command = ["bash", "scripts/run-hint.sh"]
