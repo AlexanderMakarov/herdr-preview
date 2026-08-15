@@ -25,6 +25,12 @@ title = "Preview"
 placement = "overlay"
 command = ["bash", "scripts/less-pane.sh"]
 
+[[panes]]
+id = "browse"
+title = "Browse"
+placement = "overlay"
+command = ["./target/release/herdr-preview", "browse"]
+
 [[actions]]
 id = "hint"
 platforms = ["linux", "macos"]

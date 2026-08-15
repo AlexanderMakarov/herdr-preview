@@ -1,4 +1,6 @@
-use herdr_preview::hint::{build_entries, format_list, run_hint_list, serialize_entries, HINT_KEYS};
+use herdr_preview::hint::{
+    build_entries, format_list, run_hint_list, serialize_entries, HINT_KEYS,
+};
 use std::fs;
 use std::path::PathBuf;
 
@@ -43,6 +45,7 @@ fn manifest_declares_hint_action_and_panes() {
     assert!(manifest.contains("id = \"hint\""));
     assert!(manifest.contains("id = \"hint-overlay\""));
     assert!(manifest.contains("id = \"less\""));
+    assert!(manifest.contains("id = \"browse\""));
 }
 
 #[test]
@@ -86,9 +89,7 @@ fn builds_hint_for_path_only_in_visible_worktree() {
         herdr_preview::classify::Target::File { open_spec, path } => {
             assert_eq!(
                 open_spec,
-                &format!(
-                    ".claude/worktrees/feat-109-explain-the-product/{rel}"
-                )
+                &format!(".claude/worktrees/feat-109-explain-the-product/{rel}")
             );
             assert_eq!(path, &wt.join(rel));
         }

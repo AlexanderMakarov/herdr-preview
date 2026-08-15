@@ -311,6 +311,103 @@ exit 0
 }
 
 #[test]
+fn open_file_viewer_with_origin_uses_tab_when_file_is_outside_origin_tree() {
+    let root = temp_fixture("fv-outside");
+    let log = stub_log_path(&root);
+    let herdr = root.join("herdr");
+    let plugin_root = root.join("fv-plugin");
+    let viewer_bin = plugin_root.join("target/release/herdr-file-viewer");
+    fs::create_dir_all(viewer_bin.parent().unwrap()).unwrap();
+    write_executable(&viewer_bin, "#!/bin/bash\nexit 0\n");
+
+    let list_json = format!(
+        r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
+        plugin_root.display()
+    );
+    write_executable(
+        &herdr,
+        &format!(
+            r#"#!/bin/bash
+log={log:?}
+if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
+  printf '%s\n' '{list_json}'
+  exit 0
+fi
+if [ "$1" = tab ] && [ "$2" = create ]; then
+  {log_body}
+  printf '%s\n' '{{"result":{{"root_pane":{{"pane_id":"w2:p1"}}}}}}'
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = run ]; then
+  {log_body}
+  exit 0
+fi
+{log_body}
+exit 0
+"#,
+            log = log.display(),
+            list_json = list_json,
+            log_body = log_args_stub(&log),
+        ),
+    );
+    let _gh = fake_gh(&root);
+
+    let origin_cwd = root.join("repo");
+    fs::create_dir_all(origin_cwd.join("src")).unwrap();
+    fs::write(origin_cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
+
+    let other = root.join("other");
+    fs::create_dir_all(other.join("docs")).unwrap();
+    let file = other.join("docs/usage.md");
+    fs::write(&file, "# usage\n").unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&other)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .status()
+        .expect("git init");
+    assert!(status.success(), "git init other tree");
+
+    with_path_only(&root, || {
+        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", root.display()));
+        std::env::set_var("HERDR_BIN_PATH", &herdr);
+        open_file_viewer(
+            &file.to_string_lossy(),
+            &origin_cwd,
+            Some("w9:shell"),
+        )
+        .expect("open_file_viewer");
+    });
+
+    let invocations = read_invocations(&stub_log_path(&root));
+    assert!(
+        !invocations.iter().any(|args| {
+            args.windows(3).any(|w| w == ["plugin", "pane", "open"])
+                && args.windows(2).any(|w| w == ["--target-pane", "w9:shell"])
+        }),
+        "out-of-tree file must not split onto the origin pane: {invocations:?}"
+    );
+    let create = invocations
+        .iter()
+        .find(|args| args.windows(2).any(|w| w == ["tab", "create"]))
+        .expect("tab create");
+    let other_root = other.canonicalize().unwrap();
+    assert!(
+        create.windows(2).any(|w| {
+            w[0] == "--cwd" && (w[1] == other_root.to_string_lossy() || w[1] == other.to_string_lossy())
+        }),
+        "expected --cwd at file git root {other_root:?}, got {create:?}"
+    );
+    assert!(create.windows(2).any(|w| {
+        w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=docs/usage.md"
+    }));
+    assert!(invocations
+        .iter()
+        .any(|args| args.windows(2).any(|w| w == ["pane", "run"])));
+}
+
+#[test]
 fn open_less_spawns_overlay_with_line() {
     let root = temp_fixture("less-line");
     let herdr = fake_herdr(&root);
