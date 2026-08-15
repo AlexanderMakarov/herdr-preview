@@ -181,6 +181,31 @@ fn render_shows_path_parent_dirs_files_and_legend() {
 }
 
 #[test]
+fn render_warns_when_listing_is_outside_origin_cwd() {
+    let root = fixture("outside-tab");
+    fs::create_dir_all(root.join("here")).unwrap();
+    fs::create_dir_all(root.join("elsewhere")).unwrap();
+    fs::write(root.join("elsewhere/a.rs"), "x\n").unwrap();
+    let mut state = BrowseState::open(&root.join("elsewhere"));
+    state.origin_cwd = Some(root.join("here"));
+    let out = render_browse(&state, 8, 80);
+    assert!(out.contains("outside this tab's cwd"));
+    assert!(out.contains("new tab"));
+}
+
+#[test]
+fn render_keeps_legend_when_listing_is_under_origin_cwd() {
+    let root = fixture("inside-tab");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/a.rs"), "x\n").unwrap();
+    let mut state = BrowseState::open(&root.join("src"));
+    state.origin_cwd = Some(root.clone());
+    let out = render_browse(&state, 8, 80);
+    assert!(out.contains("browse ·"));
+    assert!(!out.contains("outside this tab's cwd"));
+}
+
+#[test]
 fn map_keys_match_spec() {
     assert_eq!(
         map_browse_key(BrowseKey::Char('k')),

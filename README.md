@@ -7,9 +7,9 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 1. Install the plugin and bind `prefix+/` (see [Install](#install)).
 2. All file paths in the visible pane text are highlighted with letter hints so you can preview them. If nothing openable is on screen, you get a short notice.
 3. Press a letter to open the pick:
-   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it).
+   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it). A file **outside this pane’s cwd/repo** opens file-viewer in a **new tab** rooted at that file’s tree.
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
-   - **Directory path** → browse overlay listing that folder. Arrow keys / `j` `k` move; `Enter` or click opens a file (file-viewer or `less`) or enters a subfolder; `q` / Esc dismisses browse only.
+   - **Directory path** → browse overlay listing that folder. Arrow keys / `j` `k` move; `Enter` or click opens a file (file-viewer or `less`) or enters a subfolder; `q` / Esc dismisses browse only. If the listing is outside this pane’s cwd, the overlay says so and a file-viewer pick opens in a new tab.
 
 ## Install
 
@@ -50,6 +50,8 @@ herdr-preview does not render file content itself. It routes picks to a peer ope
 | --- | --- | --- |
 | **herdr-file-viewer** | Plugin installed and listed by `herdr plugin list` | Opens via `HERDR_FILE_VIEWER_OPEN` — rendered Markdown, syntax highlighting, git-aware tree, diff view, and the viewer's normal keys. |
 | **`less` overlay** | File-viewer not installed | A `less` pane above your current app — **reduced functionality** by design. |
+
+When the path is **outside the current pane’s cwd/repo**, file-viewer cannot reveal it in that pane’s tree, so herdr-preview opens it in a **new tab** rooted at the file’s own tree. The browse overlay footer says `outside this tab's cwd · file-viewer opens in a new tab` in that case. Paths still under the pane stay a right split.
 
 **Reduced `less` mode** (when file-viewer is absent):
 
