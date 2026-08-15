@@ -404,6 +404,55 @@ pub fn open_less(path: &Path, line: Option<u32>, herdr_bin: &Path) -> io::Result
     }
 }
 
+pub fn open_browse(
+    start: &Path,
+    origin_pane_id: Option<&str>,
+    origin_cwd: &Path,
+) -> io::Result<()> {
+    let herdr_bin = resolve_herdr_bin();
+    let start_env = format!("HERDR_PREVIEW_BROWSE_START={}", start.display());
+    let cwd_env = format!("HERDR_PREVIEW_BROWSE_CWD={}", origin_cwd.display());
+
+    let mut cmd = Command::new(&herdr_bin);
+    cmd.args([
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        "herdr-preview",
+        "--entrypoint",
+        "browse",
+        "--placement",
+        "overlay",
+        "--focus",
+        "--env",
+        &start_env,
+        "--env",
+        &cwd_env,
+    ]);
+
+    if let Some(origin) = origin_pane_id.filter(|id| !id.is_empty()) {
+        let origin_env = format!("HERDR_PREVIEW_BROWSE_ORIGIN={origin}");
+        cmd.args(["--env", &origin_env]);
+    }
+
+    let status = cmd.status().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+        } else {
+            err
+        }
+    })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "herdr plugin pane open exited with {status}"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{plugin_list_line_is_file_viewer, split_open_spec};

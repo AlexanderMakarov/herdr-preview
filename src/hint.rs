@@ -14,7 +14,7 @@ use crate::classify::{
     classify, classify_with_fallbacks, discover_worktree_roots, is_worktree_dir, Target,
 };
 use crate::herdr_ipc::{notify, read_focused_snapshot, HerdrIpcError, PaneSnapshot};
-use crate::open::{detect_file_viewer, open_file_viewer, open_less, open_url};
+use crate::open::{detect_file_viewer, open_browse, open_file_viewer, open_less, open_url};
 use crate::tokenize::{find_candidates, Span};
 
 /// Home-row-first keys; excludes `q` (cancel) and visually ambiguous letters per quicklook.
@@ -619,7 +619,7 @@ pub enum OpenRoute {
     Browser,
     FileViewer,
     Less,
-    DirSkip,
+    Browse,
     NoOp,
 }
 
@@ -633,19 +633,35 @@ pub fn route_entry(entry: &HintEntry, herdr_bin: &Path) -> OpenRoute {
                 OpenRoute::Less
             }
         }
-        Target::Dir { .. } => {
-            if detect_file_viewer(herdr_bin) {
-                OpenRoute::FileViewer
-            } else {
-                OpenRoute::DirSkip
-            }
-        }
+        Target::Dir { .. } => OpenRoute::Browse,
         Target::Missing { .. } => OpenRoute::NoOp,
     }
 }
 
-pub const DIR_SKIP_NOTICE: &str =
-    "herdr-preview: directories need herdr-file-viewer (less is file-only)";
+pub fn open_preview_file(
+    path: &Path,
+    cwd: &Path,
+    origin_pane_id: Option<&str>,
+) -> Result<(), HintError> {
+    let herdr_bin = resolve_herdr_bin();
+    match classify(&path.to_string_lossy(), cwd) {
+        Target::File { path, open_spec } => {
+            if detect_file_viewer(&herdr_bin) {
+                open_file_viewer(&open_spec, cwd, origin_pane_id)?;
+            } else {
+                let line = line_from_open_spec(&open_spec);
+                open_less(&path, line, &herdr_bin)?;
+            }
+        }
+        _ => {
+            return Err(HintError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("open_preview_file: not a file: {}", path.display()),
+            )));
+        }
+    }
+    Ok(())
+}
 
 pub fn open_entry(
     entry: &HintEntry,
@@ -669,9 +685,10 @@ pub fn open_entry(
                 open_less(path, line, &herdr_bin)?;
             }
         }
-        OpenRoute::DirSkip => {
-            eprintln!("{DIR_SKIP_NOTICE}");
-            notify("herdr-preview", DIR_SKIP_NOTICE);
+        OpenRoute::Browse => {
+            if let Target::Dir { path, .. } = &entry.target {
+                open_browse(path, origin_pane_id, cwd)?;
+            }
         }
         OpenRoute::NoOp => {}
     }
@@ -794,7 +811,7 @@ mod tests {
         assert_eq!(route_entry(&url, &herdr), OpenRoute::Browser);
         // herdr stub exits 0 on plugin list → no FV line → less / dir skip
         assert_eq!(route_entry(&file, &herdr), OpenRoute::Less);
-        assert_eq!(route_entry(&dir, &herdr), OpenRoute::DirSkip);
+        assert_eq!(route_entry(&dir, &herdr), OpenRoute::Browse);
     }
 
     #[test]

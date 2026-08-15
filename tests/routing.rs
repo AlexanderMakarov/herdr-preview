@@ -1,7 +1,7 @@
 //! End-to-end routing: `open_entry` picks FV, less, or browser from peer detect.
 
 use herdr_preview::classify::Target;
-use herdr_preview::hint::{open_entry, route_entry, HintEntry, OpenRoute, DIR_SKIP_NOTICE};
+use herdr_preview::hint::{open_entry, route_entry, HintEntry, OpenRoute};
 use herdr_preview::open::detect_file_viewer;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -312,31 +312,105 @@ fn fv_absent_routes_file_to_less_overlay() {
 }
 
 #[test]
-fn fv_absent_skips_directory_with_notice() {
-    let root = temp_fixture("less-dir-skip");
+fn directory_pick_opens_browse_overlay_even_without_fv() {
+    let root = temp_fixture("browse-dir");
     let list = "1 plugins installed:\n- other (other) enabled\n";
     let herdr = herdr_with_plugin_list(&root, list);
-    let _less = fake_less(&root);
     let cwd = root.join("repo");
     let dir = cwd.join("docs");
     fs::create_dir_all(&dir).unwrap();
     let entry = dir_entry(&dir, "docs/");
 
     with_env(&root, &herdr, || {
-        assert_eq!(route_entry(&entry, &herdr), OpenRoute::DirSkip);
+        assert_eq!(route_entry(&entry, &herdr), OpenRoute::Browse);
+        open_entry(&entry, &cwd, Some("w1:origin")).expect("open_entry");
+    });
+
+    let invocations = read_invocations(&stub_log_path(&root));
+    assert_eq!(invocations.len(), 1, "expected browse overlay summon: {invocations:?}");
+    let args = &invocations[0];
+    assert!(args.windows(2).any(|w| w == ["--plugin", "herdr-preview"]));
+    assert!(args.windows(2).any(|w| w == ["--entrypoint", "browse"]));
+    assert!(args.contains(&"overlay".to_string()));
+    let envs: Vec<_> = args.windows(2).filter(|w| w[0] == "--env").map(|w| w[1].as_str()).collect();
+    assert!(envs.iter().any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_START=") && e.contains("docs")));
+    assert!(envs.iter().any(|e| *e == "HERDR_PREVIEW_BROWSE_ORIGIN=w1:origin"));
+    assert!(envs.iter().any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_CWD=")));
+    assert!(!args.contains(&"herdr-file-viewer".to_string()));
+    assert!(!args.contains(&"less".to_string()));
+}
+
+#[test]
+fn directory_pick_opens_browse_not_fv_when_fv_installed() {
+    let root = temp_fixture("browse-dir-fv");
+    let list = "2 plugins installed:\n- herdr-file-viewer (herdr-file-viewer) enabled\n";
+    let herdr = herdr_with_plugin_list(&root, list);
+    let cwd = root.join("repo");
+    let dir = cwd.join("docs");
+    fs::create_dir_all(&dir).unwrap();
+    let entry = dir_entry(&dir, "docs/");
+
+    with_env(&root, &herdr, || {
+        assert!(detect_file_viewer(&herdr));
+        assert_eq!(route_entry(&entry, &herdr), OpenRoute::Browse);
         open_entry(&entry, &cwd, None).expect("open_entry");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert!(
-        invocations.iter().all(|args| {
-            args.windows(2).any(|w| w == ["notification", "show"])
-                && !args.contains(&"less".to_string())
-                && !args.contains(&"herdr-file-viewer".to_string())
-        }),
-        "directory skip may toast, but must not open less/FV: {invocations:?}"
+        invocations.iter().any(|args| args.windows(2).any(|w| w == ["--entrypoint", "browse"])),
+        "expected browse spawn, got {invocations:?}"
     );
-    assert!(DIR_SKIP_NOTICE.contains("directories need herdr-file-viewer"));
+    assert!(
+        !invocations.iter().any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN"))),
+        "must not OPEN a directory in file-viewer: {invocations:?}"
+    );
+}
+
+#[test]
+fn browse_file_pick_routes_to_fv_when_installed() {
+    let root = temp_fixture("browse-file-fv");
+    let list = "2 plugins installed:\n- herdr-file-viewer (herdr-file-viewer) enabled\n";
+    let herdr = herdr_with_plugin_list(&root, list);
+    let _gh = fake_gh(&root);
+    let cwd = root.join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let file = cwd.join("src/app.rs");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "fn main() {}\n").unwrap();
+
+    with_env(&root, &herdr, || {
+        herdr_preview::hint::open_preview_file(&file, &cwd, None).expect("open_preview_file");
+    });
+
+    let invocations = read_invocations(&stub_log_path(&root));
+    assert!(
+        invocations.iter().any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN="))),
+        "expected FV OPEN, got {invocations:?}"
+    );
+    assert!(!root.join("gh.log").exists());
+}
+
+#[test]
+fn browse_file_pick_routes_to_less_when_fv_absent() {
+    let root = temp_fixture("browse-file-less");
+    let list = "1 plugins installed:\n- other (other) enabled\n";
+    let herdr = herdr_with_plugin_list(&root, list);
+    let _less = fake_less(&root);
+    let cwd = root.join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let file = cwd.join("doc.md");
+    fs::write(&file, "# hi\n").unwrap();
+
+    with_env(&root, &herdr, || {
+        herdr_preview::hint::open_preview_file(&file, &cwd, None).expect("open_preview_file");
+    });
+
+    let invocations = read_invocations(&stub_log_path(&root));
+    let args = &invocations[0];
+    assert!(args.contains(&"less".to_string()));
+    assert!(args.contains(&"overlay".to_string()));
+    assert!(!args.contains(&"browse".to_string()));
 }
 
 #[test]
