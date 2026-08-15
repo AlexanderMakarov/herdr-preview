@@ -195,12 +195,15 @@ fn list_rows(path: &Path) -> io::Result<Vec<BrowseRow>> {
     let mut children = Vec::new();
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_path = entry.path();
-        if file_type.is_dir() {
+        // Follow symlinks so symlink-to-dir / symlink-to-file list as Dir / File.
+        let Ok(meta) = fs::metadata(&child_path) else {
+            continue;
+        };
+        if meta.is_dir() {
             children.push((true, name, child_path));
-        } else if file_type.is_file() {
+        } else if meta.is_file() {
             children.push((false, name, child_path));
         }
     }
@@ -336,13 +339,30 @@ pub fn parse_browse_input(prefix: &[u8]) -> Option<BrowseKey> {
     match prefix {
         [b'\r'] | [b'\n'] => Some(BrowseKey::Enter),
         [ESC] => Some(BrowseKey::Esc),
-        [ESC, b'[', b'A'] => Some(BrowseKey::Up),
-        [ESC, b'[', b'B'] => Some(BrowseKey::Down),
-        [ESC, b'[', b'C'] => Some(BrowseKey::Right),
-        [ESC, b'[', b'D'] => Some(BrowseKey::Left),
-        [ESC, b'[', b'<', rest @ ..] => parse_sgr_mouse(rest),
+        [ESC, b'[', b'A', ..] => Some(BrowseKey::Up),
+        [ESC, b'[', b'B', ..] => Some(BrowseKey::Down),
+        [ESC, b'[', b'C', ..] => Some(BrowseKey::Right),
+        [ESC, b'[', b'D', ..] => Some(BrowseKey::Left),
+        [ESC, b'[', b'<', ..] => {
+            let end = prefix.iter().position(|&b| b == b'M' || b == b'm')?;
+            parse_sgr_mouse(&prefix[3..=end])
+        }
         [byte] if byte.is_ascii_graphic() || *byte == b' ' => Some(BrowseKey::Char(*byte as char)),
         _ => None,
+    }
+}
+
+/// Bytes of the first complete key/CSI sequence at the front of `input`.
+fn first_input_len(input: &[u8]) -> Option<usize> {
+    match input {
+        [] => None,
+        [ESC, b'[', rest @ ..] => rest
+            .iter()
+            .position(u8::is_ascii_alphabetic)
+            .map(|i| 2 + i + 1),
+        [ESC] => Some(1),
+        [ESC, ..] => Some(1),
+        _ => Some(1),
     }
 }
 
@@ -386,24 +406,41 @@ pub fn run_browse_overlay() -> Result<(), io::Error> {
     let origin = std::env::var("HERDR_PREVIEW_BROWSE_ORIGIN").ok();
 
     let mut state = BrowseState::open(Path::new(&start));
+    match browse_pick(&mut state)? {
+        BrowseOutcome::OpenFile { path } => {
+            crate::hint::open_preview_file(&path, Path::new(&origin_cwd), origin.as_deref())
+                .map_err(|err| match err {
+                    crate::hint::HintError::Io(e) => e,
+                    other => io::Error::other(other.to_string()),
+                })?;
+            Ok(())
+        }
+        BrowseOutcome::Dismiss | BrowseOutcome::Continue => Ok(()),
+    }
+}
+
+/// Run the browse TUI until dismiss or file pick. Drops RawMode/TerminalGuard
+/// before returning so `open_preview_file` sees a restored TTY (same as hint overlay).
+fn browse_pick(state: &mut BrowseState) -> io::Result<BrowseOutcome> {
     let mut stdout = io::stdout();
     let mut tty = open_tty()?;
     let _raw = RawMode::enter(tty.as_raw_fd())?;
     let _term = TerminalGuard::enter(&mut stdout)?;
+    let mut leftover = Vec::new();
 
     loop {
         let (rows, cols) = tty_size(tty.as_raw_fd()).unwrap_or((24, 80));
         let visible_rows = (rows as usize).saturating_sub(2).max(1);
-        paint_browse(&mut stdout, &state, rows, cols)?;
+        paint_browse(&mut stdout, state, rows, cols)?;
 
-        let key = match read_browse_key(&mut tty)? {
+        let key = match read_browse_key(&mut tty, &mut leftover)? {
             Some(key) => key,
             None => continue,
         };
 
         let outcome = match key {
             BrowseKey::MouseClick { row, .. } => {
-                if let Some(cmd) = click_command(&state, row, rows) {
+                if let Some(cmd) = click_command(state, row, rows) {
                     let _ = state.apply(cmd, visible_rows);
                     state.apply(BrowseCommand::Activate, visible_rows)
                 } else {
@@ -418,15 +455,7 @@ pub fn run_browse_overlay() -> Result<(), io::Error> {
 
         match outcome {
             BrowseOutcome::Continue => {}
-            BrowseOutcome::Dismiss => return Ok(()),
-            BrowseOutcome::OpenFile { path } => {
-                crate::hint::open_preview_file(&path, Path::new(&origin_cwd), origin.as_deref())
-                    .map_err(|err| match err {
-                        crate::hint::HintError::Io(e) => e,
-                        other => io::Error::other(other.to_string()),
-                    })?;
-                return Ok(());
-            }
+            other => return Ok(other),
         }
     }
 }
@@ -521,30 +550,45 @@ fn open_tty() -> io::Result<fs::File> {
         .open("/dev/tty")
 }
 
-fn read_browse_key(tty: &mut fs::File) -> io::Result<Option<BrowseKey>> {
-    let mut buf = [0u8; 1];
-    tty.read_exact(&mut buf)?;
-    if buf[0] != ESC {
-        return Ok(parse_browse_input(&buf));
-    }
+fn read_browse_key(tty: &mut fs::File, leftover: &mut Vec<u8>) -> io::Result<Option<BrowseKey>> {
+    loop {
+        if leftover.is_empty() {
+            let mut buf = [0u8; 1];
+            tty.read_exact(&mut buf)?;
+            if buf[0] != ESC {
+                leftover.push(buf[0]);
+            } else {
+                let fd = tty.as_raw_fd();
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+                if ready == 0 {
+                    return Ok(Some(BrowseKey::Esc));
+                }
+                if ready < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                leftover.push(ESC);
+                let mut extra = [0u8; 32];
+                let n = tty.read(&mut extra)?;
+                leftover.extend_from_slice(&extra[..n]);
+            }
+        }
 
-    let fd = tty.as_raw_fd();
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
-    if ready == 0 {
-        return Ok(Some(BrowseKey::Esc));
+        if let Some(n) = first_input_len(leftover) {
+            let seq: Vec<u8> = leftover.drain(..n).collect();
+            return Ok(parse_browse_input(&seq));
+        }
+
+        let mut extra = [0u8; 32];
+        let n = tty.read(&mut extra)?;
+        if n == 0 {
+            leftover.clear();
+            return Ok(None);
+        }
+        leftover.extend_from_slice(&extra[..n]);
     }
-    if ready < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut extra = [0u8; 32];
-    let n = tty.read(&mut extra)?;
-    let mut seq = Vec::with_capacity(1 + n);
-    seq.push(ESC);
-    seq.extend_from_slice(&extra[..n]);
-    Ok(parse_browse_input(&seq))
 }

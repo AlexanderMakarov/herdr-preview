@@ -809,7 +809,7 @@ mod tests {
         };
 
         assert_eq!(route_entry(&url, &herdr), OpenRoute::Browser);
-        // herdr stub exits 0 on plugin list → no FV line → less / dir skip
+        // herdr stub exits 0 on plugin list → no FV line → less / browse
         assert_eq!(route_entry(&file, &herdr), OpenRoute::Less);
         assert_eq!(route_entry(&dir, &herdr), OpenRoute::Browse);
     }

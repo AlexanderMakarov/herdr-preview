@@ -3,7 +3,7 @@ use herdr_preview::browse::{
     BrowseOutcome, BrowseRow, BrowseState,
 };
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{self as unix_fs, PermissionsExt};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> PathBuf {
@@ -41,6 +41,33 @@ fn lists_parent_dirs_then_files_case_insensitive_including_dots() {
             "README.md".to_string(),
             "Zed.txt".to_string(),
         ]
+    );
+}
+
+#[test]
+fn lists_symlink_to_file_and_symlink_to_dir() {
+    let root = fixture("symlinks");
+    fs::create_dir_all(root.join("realdir")).unwrap();
+    fs::write(root.join("realfile.txt"), "x\n").unwrap();
+    unix_fs::symlink(root.join("realdir"), root.join("linkdir")).unwrap();
+    unix_fs::symlink(root.join("realfile.txt"), root.join("linkfile")).unwrap();
+
+    let state = BrowseState::open(&root);
+    assert!(
+        state
+            .rows
+            .iter()
+            .any(|r| matches!(r, BrowseRow::Dir { name, .. } if name == "linkdir")),
+        "symlink-to-dir should list as Dir, got {:?}",
+        state.rows
+    );
+    assert!(
+        state
+            .rows
+            .iter()
+            .any(|r| matches!(r, BrowseRow::File { name, .. } if name == "linkfile")),
+        "symlink-to-file should list as File, got {:?}",
+        state.rows
     );
 }
 
@@ -224,6 +251,12 @@ fn parse_arrows_and_sgr_mouse() {
         parse_browse_input(b"\x1b[<65;1;1M"),
         Some(BrowseKey::MouseWheelDown)
     );
+}
+
+#[test]
+fn parse_concatenated_sgr_wheel_burst_yields_first_event() {
+    let burst = b"\x1b[<64;1;1M\x1b[<64;1;1M\x1b[<65;1;1M";
+    assert_eq!(parse_browse_input(burst), Some(BrowseKey::MouseWheelUp));
 }
 
 #[test]
