@@ -1,4 +1,7 @@
-use herdr_preview::browse::{BrowseCommand, BrowseOutcome, BrowseRow, BrowseState};
+use herdr_preview::browse::{
+    click_command, map_browse_key, parse_browse_input, render_browse, BrowseCommand, BrowseKey,
+    BrowseOutcome, BrowseRow, BrowseState,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -65,10 +68,19 @@ fn drill_in_and_parent_walk() {
         .position(|r| matches!(r, BrowseRow::Dir { name, .. } if name == "docs"))
         .unwrap();
     state.selected = docs;
-    assert_eq!(state.apply(BrowseCommand::Activate, 10), BrowseOutcome::Continue);
+    assert_eq!(
+        state.apply(BrowseCommand::Activate, 10),
+        BrowseOutcome::Continue
+    );
     assert_eq!(state.cwd, root.join("docs"));
-    assert!(state.rows.iter().any(|r| matches!(r, BrowseRow::File { name, .. } if name == "plan.md")));
-    assert_eq!(state.apply(BrowseCommand::GoParent, 10), BrowseOutcome::Continue);
+    assert!(state
+        .rows
+        .iter()
+        .any(|r| matches!(r, BrowseRow::File { name, .. } if name == "plan.md")));
+    assert_eq!(
+        state.apply(BrowseCommand::GoParent, 10),
+        BrowseOutcome::Continue
+    );
     assert_eq!(state.cwd, root);
 }
 
@@ -104,7 +116,10 @@ fn unreadable_dir_keeps_previous_listing() {
         .position(|r| matches!(r, BrowseRow::Dir { name, .. } if name == "secret"))
         .unwrap();
     state.selected = idx;
-    assert_eq!(state.apply(BrowseCommand::Activate, 10), BrowseOutcome::Continue);
+    assert_eq!(
+        state.apply(BrowseCommand::Activate, 10),
+        BrowseOutcome::Continue
+    );
     assert_eq!(state.rows, before);
     assert_eq!(state.notice.as_deref(), Some("cannot read directory"));
     let _ = fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755));
@@ -122,4 +137,112 @@ fn move_and_scroll_keep_selection_visible() {
     }
     assert!(state.selected >= state.scroll);
     assert!(state.selected < state.scroll + 5);
+}
+
+#[test]
+fn render_shows_path_parent_dirs_files_and_legend() {
+    let root = fixture("render");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("a.rs"), "x\n").unwrap();
+    let state = BrowseState::open(&root);
+    let out = render_browse(&state, 8, 80);
+    assert!(out.contains(&root.display().to_string()) || out.contains("browse-"));
+    assert!(out.contains(".."));
+    assert!(out.contains("docs/"));
+    assert!(out.contains("a.rs"));
+    assert!(out.contains("browse ·"));
+}
+
+#[test]
+fn map_keys_match_spec() {
+    assert_eq!(
+        map_browse_key(BrowseKey::Char('k')),
+        Some(BrowseCommand::MoveUp)
+    );
+    assert_eq!(map_browse_key(BrowseKey::Up), Some(BrowseCommand::MoveUp));
+    assert_eq!(
+        map_browse_key(BrowseKey::Char('j')),
+        Some(BrowseCommand::MoveDown)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Down),
+        Some(BrowseCommand::MoveDown)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Char('h')),
+        Some(BrowseCommand::GoParent)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Left),
+        Some(BrowseCommand::GoParent)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Char('l')),
+        Some(BrowseCommand::EnterDir)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Right),
+        Some(BrowseCommand::EnterDir)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Enter),
+        Some(BrowseCommand::Activate)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::Char('q')),
+        Some(BrowseCommand::Dismiss)
+    );
+    assert_eq!(map_browse_key(BrowseKey::Esc), Some(BrowseCommand::Dismiss));
+    assert_eq!(
+        map_browse_key(BrowseKey::MouseWheelUp),
+        Some(BrowseCommand::ScrollUp)
+    );
+    assert_eq!(
+        map_browse_key(BrowseKey::MouseWheelDown),
+        Some(BrowseCommand::ScrollDown)
+    );
+}
+
+#[test]
+fn parse_arrows_and_sgr_mouse() {
+    assert_eq!(parse_browse_input(&[b'j']), Some(BrowseKey::Char('j')));
+    assert_eq!(parse_browse_input(&[0x0d]), Some(BrowseKey::Enter));
+    assert_eq!(parse_browse_input(&[0x1b]), Some(BrowseKey::Esc));
+    assert_eq!(parse_browse_input(b"\x1b[A"), Some(BrowseKey::Up));
+    assert_eq!(parse_browse_input(b"\x1b[B"), Some(BrowseKey::Down));
+    assert_eq!(parse_browse_input(b"\x1b[C"), Some(BrowseKey::Right));
+    assert_eq!(parse_browse_input(b"\x1b[D"), Some(BrowseKey::Left));
+    assert_eq!(
+        parse_browse_input(b"\x1b[<0;1;3M"),
+        Some(BrowseKey::MouseClick { row: 2, col: 0 })
+    );
+    assert_eq!(
+        parse_browse_input(b"\x1b[<64;1;1M"),
+        Some(BrowseKey::MouseWheelUp)
+    );
+    assert_eq!(
+        parse_browse_input(b"\x1b[<65;1;1M"),
+        Some(BrowseKey::MouseWheelDown)
+    );
+}
+
+#[test]
+fn click_on_list_row_selects_index() {
+    let root = fixture("click");
+    fs::write(root.join("a.rs"), "x\n").unwrap();
+    let state = BrowseState::open(&root);
+    // row 0 header; row 1 is `..` (index 0); next child starts at row 2
+    assert_eq!(click_command(&state, 0, 8), None);
+    assert_eq!(click_command(&state, 7, 8), None);
+    assert_eq!(
+        click_command(&state, 1, 8),
+        Some(BrowseCommand::SelectIndex(0))
+    );
+}
+
+#[test]
+fn manifest_declares_browse_pane() {
+    let manifest = std::fs::read_to_string("herdr-plugin.toml").unwrap();
+    assert!(manifest.contains("id = \"browse\""));
+    assert!(!manifest.contains("[[link_handlers]]"));
 }

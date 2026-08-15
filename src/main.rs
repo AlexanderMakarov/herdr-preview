@@ -7,6 +7,7 @@ fn print_usage() {
          Usage:\n\
            herdr-preview hint [--list] [--text TEXT] [--cwd PATH]\n\
            herdr-preview hint-overlay\n\
+           herdr-preview browse\n\
            herdr-preview [OPTIONS]\n\
          \n\
          Options:\n\
@@ -20,8 +21,8 @@ fn print_version() {
 }
 
 fn run_hint(args: &[String]) -> i32 {
-    use herdr_preview::hint::{run_hint_action, run_hint_list, HintError};
     use herdr_preview::herdr_ipc::read_focused_snapshot;
+    use herdr_preview::hint::{run_hint_action, run_hint_list, HintError};
     use std::path::PathBuf;
 
     let mut list = false;
@@ -34,25 +35,17 @@ fn run_hint(args: &[String]) -> i32 {
             "--list" => list = true,
             "--text" => {
                 index += 1;
-                text = Some(
-                    args.get(index)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            eprintln!("herdr-preview hint: --text requires a value");
-                            std::process::exit(1);
-                        }),
-                );
+                text = Some(args.get(index).cloned().unwrap_or_else(|| {
+                    eprintln!("herdr-preview hint: --text requires a value");
+                    std::process::exit(1);
+                }));
             }
             "--cwd" => {
                 index += 1;
-                cwd = Some(
-                    args.get(index)
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| {
-                            eprintln!("herdr-preview hint: --cwd requires a value");
-                            std::process::exit(1);
-                        }),
-                );
+                cwd = Some(args.get(index).map(PathBuf::from).unwrap_or_else(|| {
+                    eprintln!("herdr-preview hint: --cwd requires a value");
+                    std::process::exit(1);
+                }));
             }
             flag => {
                 eprintln!("herdr-preview hint: unknown argument `{flag}`");
@@ -132,6 +125,13 @@ fn main() {
                 }
             }
         }
+        [cmd] if cmd == "browse" => match herdr_preview::browse::run_browse_overlay() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("herdr-preview browse: {err}");
+                std::process::exit(1);
+            }
+        },
         _ => {
             eprintln!("herdr-preview: unknown arguments (try --help)");
             std::process::exit(1);
