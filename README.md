@@ -9,6 +9,7 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 3. Press a letter to open the pick:
    - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it).
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
+   - **Directory path** → browse overlay listing that folder. Arrow keys / `j` `k` move; `Enter` or click opens a file (file-viewer or `less`) or enters a subfolder; `q` / Esc dismisses browse only.
 
 ## Install
 
@@ -54,7 +55,7 @@ herdr-preview does not render file content itself. It routes picks to a peer ope
 
 - Plain paging only — no glow/bat rendering, no git tree, no diff view.
 - Line jumps when the token includes `:N` or `:A-B`.
-- Directories are skipped with a notice (`less` is file-oriented).
+- Directories open the same browse overlay as when file-viewer is installed; choosing a file then uses `less`.
 - `q` closes the overlay and returns to the pane underneath.
 
 Install [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) for the full preview experience; the `less` fallback exists so hint-pick still works without it.

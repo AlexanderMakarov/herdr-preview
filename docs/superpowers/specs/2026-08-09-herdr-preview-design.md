@@ -20,7 +20,7 @@ Opening a path (often Markdown) that an agent printed in a Herdr pane — plans,
 
 ## Non-goals (MVP)
 
-- Own full file-browser / tree UI.
+- Own full file-browser / tree UI (a thin directory browse overlay is specified in `docs/superpowers/specs/2026-08-12-directory-browse-design.md`).
 - Image or media rendering.
 - Ctrl-hold underline or OSC-8 linkify inside scrollback.
 - Full-scrollback scan (visible only).
@@ -60,7 +60,7 @@ open_preview:
    - Resolves relative segments against `focused_pane_cwd`.
    - Handles spaced paths and `%20` (known quicklook footgun).
    - Passes `path`, `path:N`, or `path:A-B` through to file-viewer OPEN when using FV (same shapes FV documents; no separate column hop).
-   - Directories: with FV, summon and select/open that directory if OPEN accepts it; with `less` fallback, skip + notice (less is file-oriented).
+   - Directories: open the herdr-preview browse overlay (see 2026-08-12 directory-browse spec); file chosen there uses FV or `less`.
 4. Choosing `http(s)`: system browser only.
 5. File-viewer path: focus lands in Files; `q` / `Esc` quits the viewer process and tears down the split/tab (same as normal FV summon). Note: `q` exits the whole Files app, not a stacked “preview layer.”
 6. `less` fallback: overlay above the existing app; fewer features (no glow/bat/git/tree); document clearly in README.
@@ -72,7 +72,7 @@ Placement for hints and for `less`: overlay/popup above the current application 
 | Kind | Action |
 | --- | --- |
 | Existing regular file | `open_preview` (FV or `less`; binary handling left to the opener) |
-| Directory | FV summon/OPEN if accepted; `less` path → skip + notice |
+| Directory | browse overlay (always); file chosen → `open_preview` |
 | `http://` / `https://` | System browser |
 | Missing path after resolve | Skip + notice |
 
