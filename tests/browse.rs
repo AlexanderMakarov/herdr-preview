@@ -14,7 +14,8 @@ fn fixture(name: &str) -> PathBuf {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    // macOS temp_dir is `/var/folders/...`; canonicalize is `/private/var/...`.
+    dir.canonicalize().unwrap_or(dir)
 }
 
 #[test]
