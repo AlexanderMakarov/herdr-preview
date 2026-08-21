@@ -36,6 +36,8 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
 
     while index < words.len() {
         let (word_start, word_end) = trim_wrappers(line, words[index]);
+        let (word_start, word_end) =
+            env_assignment_path(line, word_start, word_end).unwrap_or((word_start, word_end));
         let word = &line[word_start..word_end];
         let abs_start = line_start + word_start;
         let abs_end = line_start + word_end;
@@ -62,6 +64,9 @@ fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
                 for (next_index, bounds) in words.iter().enumerate().skip(index + 1) {
                     let (next_start, next_end) = trim_wrappers(line, *bounds);
                     let next_word = &line[next_start..next_end];
+                    if is_duration_token(next_word) {
+                        break;
+                    }
                     if !is_path_continuation(next_word) {
                         break;
                     }
@@ -136,9 +141,7 @@ fn markdown_link_destinations(line: &str) -> Vec<(usize, usize)> {
 }
 
 fn overlaps_any(start: usize, end: usize, covered: &[(usize, usize)]) -> bool {
-    covered
-        .iter()
-        .any(|&(c0, c1)| start < c1 && end > c0)
+    covered.iter().any(|&(c0, c1)| start < c1 && end > c0)
 }
 
 fn word_bounds(line: &str) -> Vec<(usize, usize)> {
@@ -190,6 +193,35 @@ fn trim_wrappers(line: &str, (mut start, mut end): (usize, usize)) -> (usize, us
     (start, end)
 }
 
+fn env_assignment_path(line: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let word = &line[start..end];
+    let (lhs, rhs) = word.split_once('=')?;
+    if lhs.is_empty()
+        || !lhs.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || !lhs
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return None;
+    }
+    if !is_path_start(rhs) {
+        return None;
+    }
+    let rhs_start = start + lhs.len() + 1;
+    Some((rhs_start, end))
+}
+
+fn is_duration_token(word: &str) -> bool {
+    let Some(rest) = word.strip_suffix('s') else {
+        return false;
+    };
+    if rest.is_empty() || !rest.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
 fn is_url(word: &str) -> bool {
     word.starts_with("http://") || word.starts_with("https://")
 }
@@ -203,7 +235,7 @@ fn is_path_start(word: &str) -> bool {
 }
 
 fn is_bare_filename(word: &str) -> bool {
-    if word.contains('/') {
+    if word.contains('/') || is_duration_token(word) {
         return false;
     }
     let name = word.split(':').next().unwrap_or(word);
@@ -216,9 +248,9 @@ fn is_bare_filename(word: &str) -> bool {
         Some(0) => {
             // ".gitignore" — hidden file without a second dot: treat as path-like.
             name.len() > 1
-                && name.chars().all(|c| {
-                    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
-                })
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
         }
         Some(dot) => {
             let ext = &name[dot + 1..];

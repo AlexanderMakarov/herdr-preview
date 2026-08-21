@@ -229,3 +229,247 @@ fn fallback_worktree_rewrites_open_spec_under_primary_cwd() {
         ".claude/worktrees/feat-x/context/spec/technical-considerations.md"
     );
 }
+
+#[test]
+fn resolves_leading_ascii_ellipsis_to_unique_cwd_file() {
+    let root = temp_fixture("collapsed-unique");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify("...xt/spec/009-one-call-per-source-synth/review.md", &cwd);
+
+    assert_eq!(file_target_path(target.clone()), dest);
+    assert_eq!(
+        file_open_spec(target),
+        "context/spec/009-one-call-per-source-synth/review.md"
+    );
+}
+
+#[test]
+fn resolves_leading_unicode_ellipsis_to_unique_cwd_file() {
+    let root = temp_fixture("collapsed-unicode");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify("…xt/spec/009-one-call-per-source-synth/review.md", &cwd);
+
+    assert_eq!(file_target_path(target), dest);
+}
+
+#[test]
+fn resolves_internal_unicode_ellipsis_as_component_wildcard() {
+    let root = temp_fixture("collapsed-middle");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify("context/spec/…/review.md", &cwd);
+
+    assert_eq!(file_target_path(target.clone()), dest);
+    assert_eq!(
+        file_open_spec(target),
+        "context/spec/009-one-call-per-source-synth/review.md"
+    );
+}
+
+#[test]
+fn resolves_leading_and_internal_ellipsis_together() {
+    let root = temp_fixture("collapsed-both");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify("...xt/spec/…/review.md", &cwd);
+
+    assert_eq!(file_target_path(target), dest);
+}
+
+#[test]
+fn collapsed_without_slash_in_remainder_stays_missing() {
+    let root = temp_fixture("collapsed-noslash");
+    let cwd = root.join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::write(cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
+
+    let target = classify("...rs", &cwd);
+
+    assert_eq!(
+        target,
+        Target::Missing {
+            display: "...rs".into()
+        }
+    );
+}
+
+#[test]
+fn parent_dir_prefix_is_not_treated_as_collapsed() {
+    let root = temp_fixture("not-collapsed-dotdot");
+    let cwd = root.join("repo/sub");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(root.join("repo/sibling.md"), "# sibling\n").unwrap();
+
+    let target = classify("../sibling.md", &cwd);
+
+    assert_eq!(file_target_path(target), root.join("repo/sibling.md"));
+}
+
+#[test]
+fn collapsed_keeps_line_suffix_on_resolved_open_spec() {
+    let root = temp_fixture("collapsed-line");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify(
+        "...xt/spec/009-one-call-per-source-synth/review.md:12",
+        &cwd,
+    );
+
+    assert_eq!(file_target_path(target.clone()), dest);
+    assert_eq!(
+        file_open_spec(target),
+        "context/spec/009-one-call-per-source-synth/review.md:12"
+    );
+}
+
+#[test]
+fn collapsed_ambiguous_cwd_picks_lexicographic_first() {
+    let root = temp_fixture("collapsed-ambig-cwd");
+    let cwd = root.join("repo");
+    let a = cwd.join("aaa/xt/spec/009-one-call-per-source-synth/review.md");
+    let z = cwd.join("zzz/xt/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(z.parent().unwrap()).unwrap();
+    fs::write(&a, "a\n").unwrap();
+    fs::write(&z, "z\n").unwrap();
+
+    let target = classify("...xt/spec/009-one-call-per-source-synth/review.md", &cwd);
+
+    match target {
+        Target::File {
+            path, ambiguous, ..
+        } => {
+            assert_eq!(path, a);
+            assert!(ambiguous);
+        }
+        other => panic!("expected file, got {other:?}"),
+    }
+}
+
+#[test]
+fn collapsed_skips_node_modules_git_and_target_dirs() {
+    let root = temp_fixture("collapsed-skip");
+    let cwd = root.join("repo");
+    let hidden = cwd.join("node_modules/xt/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(hidden.parent().unwrap()).unwrap();
+    fs::write(&hidden, "pkg\n").unwrap();
+
+    let target = classify("...xt/spec/009-one-call-per-source-synth/review.md", &cwd);
+
+    assert_eq!(
+        target,
+        Target::Missing {
+            display: "...xt/spec/009-one-call-per-source-synth/review.md".into()
+        }
+    );
+}
+
+#[test]
+fn collapsed_prefers_cwd_over_worktree_fallback() {
+    use herdr_preview::classify::classify_with_fallbacks;
+
+    let root = temp_fixture("collapsed-cwd-wins");
+    let cwd = root.join("repo");
+    let wt = cwd.join(".claude/worktrees/other");
+    let cwd_file = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    let wt_file = wt.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(cwd_file.parent().unwrap()).unwrap();
+    fs::create_dir_all(wt_file.parent().unwrap()).unwrap();
+    fs::write(&cwd_file, "cwd\n").unwrap();
+    fs::write(&wt_file, "wt\n").unwrap();
+
+    let target = classify_with_fallbacks(
+        "...xt/spec/009-one-call-per-source-synth/review.md",
+        &cwd,
+        &[wt],
+    );
+
+    match target {
+        Target::File {
+            path, ambiguous, ..
+        } => {
+            assert_eq!(path, cwd_file);
+            assert!(!ambiguous);
+        }
+        other => panic!("expected cwd file, got {other:?}"),
+    }
+}
+
+#[test]
+fn collapsed_unique_worktree_hit_rewrites_open_spec() {
+    use herdr_preview::classify::classify_with_fallbacks;
+
+    let root = temp_fixture("collapsed-wt-unique");
+    let cwd = root.join("repo");
+    let wt = cwd.join(".claude/worktrees/feat-x");
+    let dest = wt.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let target = classify_with_fallbacks(
+        "...xt/spec/009-one-call-per-source-synth/review.md",
+        &cwd,
+        &[wt.clone()],
+    );
+
+    assert_eq!(file_target_path(target.clone()), dest);
+    assert_eq!(
+        file_open_spec(target.clone()),
+        ".claude/worktrees/feat-x/context/spec/009-one-call-per-source-synth/review.md"
+    );
+    match target {
+        Target::File { ambiguous, .. } => assert!(!ambiguous),
+        other => panic!("expected file, got {other:?}"),
+    }
+}
+
+#[test]
+fn collapsed_two_worktrees_opens_first_fallback_as_ambiguous() {
+    use herdr_preview::classify::classify_with_fallbacks;
+
+    let root = temp_fixture("collapsed-wt-ambig");
+    let cwd = root.join("repo");
+    let wt_a = cwd.join(".claude/worktrees/aaa");
+    let wt_z = cwd.join(".claude/worktrees/zzz");
+    let a = wt_a.join("context/spec/009-one-call-per-source-synth/review.md");
+    let z = wt_z.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(z.parent().unwrap()).unwrap();
+    fs::write(&a, "a\n").unwrap();
+    fs::write(&z, "z\n").unwrap();
+
+    let target = classify_with_fallbacks(
+        "...xt/spec/009-one-call-per-source-synth/review.md",
+        &cwd,
+        &[wt_a.clone(), wt_z],
+    );
+
+    match target {
+        Target::File {
+            path, ambiguous, ..
+        } => {
+            assert_eq!(path, a);
+            assert!(ambiguous);
+        }
+        other => panic!("expected first-fallback file, got {other:?}"),
+    }
+}

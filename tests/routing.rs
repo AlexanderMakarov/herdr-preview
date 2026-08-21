@@ -194,33 +194,35 @@ fn with_env<F: FnOnce()>(root: &Path, herdr: &Path, f: F) {
 
 fn file_entry(path: &Path, open_spec: &str) -> HintEntry {
     HintEntry {
-        key: 'a',
+        key: Some('a'),
         start: 0,
         end: open_spec.len(),
         raw: open_spec.to_string(),
         target: Target::File {
             path: path.to_path_buf(),
             open_spec: open_spec.to_string(),
+            ambiguous: false,
         },
     }
 }
 
 fn dir_entry(path: &Path, open_spec: &str) -> HintEntry {
     HintEntry {
-        key: 'a',
+        key: Some('a'),
         start: 0,
         end: open_spec.len(),
         raw: format!("{}/", path.display()),
         target: Target::Dir {
             path: path.to_path_buf(),
             open_spec: open_spec.to_string(),
+            ambiguous: false,
         },
     }
 }
 
 fn url_entry(url: &str) -> HintEntry {
     HintEntry {
-        key: 'a',
+        key: Some('a'),
         start: 0,
         end: url.len(),
         raw: url.to_string(),
@@ -327,15 +329,29 @@ fn directory_pick_opens_browse_overlay_even_without_fv() {
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
-    assert_eq!(invocations.len(), 1, "expected browse overlay summon: {invocations:?}");
+    assert_eq!(
+        invocations.len(),
+        1,
+        "expected browse overlay summon: {invocations:?}"
+    );
     let args = &invocations[0];
     assert!(args.windows(2).any(|w| w == ["--plugin", "herdr-preview"]));
     assert!(args.windows(2).any(|w| w == ["--entrypoint", "browse"]));
     assert!(args.contains(&"overlay".to_string()));
-    let envs: Vec<_> = args.windows(2).filter(|w| w[0] == "--env").map(|w| w[1].as_str()).collect();
-    assert!(envs.iter().any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_START=") && e.contains("docs")));
-    assert!(envs.iter().any(|e| *e == "HERDR_PREVIEW_BROWSE_ORIGIN=w1:origin"));
-    assert!(envs.iter().any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_CWD=")));
+    let envs: Vec<_> = args
+        .windows(2)
+        .filter(|w| w[0] == "--env")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert!(envs
+        .iter()
+        .any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_START=") && e.contains("docs")));
+    assert!(envs
+        .iter()
+        .any(|e| *e == "HERDR_PREVIEW_BROWSE_ORIGIN=w1:origin"));
+    assert!(envs
+        .iter()
+        .any(|e| e.starts_with("HERDR_PREVIEW_BROWSE_CWD=")));
     assert!(!args.contains(&"herdr-file-viewer".to_string()));
     assert!(!args.contains(&"less".to_string()));
 }
@@ -358,11 +374,15 @@ fn directory_pick_opens_browse_not_fv_when_fv_installed() {
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert!(
-        invocations.iter().any(|args| args.windows(2).any(|w| w == ["--entrypoint", "browse"])),
+        invocations
+            .iter()
+            .any(|args| args.windows(2).any(|w| w == ["--entrypoint", "browse"])),
         "expected browse spawn, got {invocations:?}"
     );
     assert!(
-        !invocations.iter().any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN"))),
+        !invocations
+            .iter()
+            .any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN"))),
         "must not OPEN a directory in file-viewer: {invocations:?}"
     );
 }
@@ -385,7 +405,9 @@ fn browse_file_pick_routes_to_fv_when_installed() {
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert!(
-        invocations.iter().any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN="))),
+        invocations
+            .iter()
+            .any(|args| args.iter().any(|a| a.contains("HERDR_FILE_VIEWER_OPEN="))),
         "expected FV OPEN, got {invocations:?}"
     );
     assert!(!root.join("gh.log").exists());

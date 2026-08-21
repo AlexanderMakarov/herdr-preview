@@ -240,13 +240,19 @@ exit 0
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
-    assert_eq!(invocations.len(), 2, "tab create + pane run: {invocations:?}");
+    assert_eq!(
+        invocations.len(),
+        2,
+        "tab create + pane run: {invocations:?}"
+    );
 
     let create = &invocations[0];
     assert!(create.windows(2).any(|w| w == ["tab", "create"]));
     assert!(create.contains(&"--cwd".to_string()));
-    assert!(create.contains(&cwd.canonicalize().unwrap().to_string_lossy().into_owned())
-        || create.contains(&cwd.to_string_lossy().into_owned()));
+    assert!(
+        create.contains(&cwd.canonicalize().unwrap().to_string_lossy().into_owned())
+            || create.contains(&cwd.to_string_lossy().into_owned())
+    );
     assert!(create.contains(&"--focus".to_string()));
     assert!(create
         .windows(2)
@@ -302,12 +308,10 @@ exit 0
         .iter()
         .find(|args| args.windows(3).any(|w| w == ["plugin", "pane", "open"]))
         .expect("plugin pane open");
+    assert!(open.windows(2).any(|w| w == ["--target-pane", "w9:shell"]));
     assert!(open
         .windows(2)
-        .any(|w| w == ["--target-pane", "w9:shell"]));
-    assert!(open.windows(2).any(|w| {
-        w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs"
-    }));
+        .any(|w| { w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs" }));
 }
 
 #[test]
@@ -372,12 +376,8 @@ exit 0
     with_path_only(&root, || {
         std::env::set_var("PATH", format!("{}:/usr/bin:/bin", root.display()));
         std::env::set_var("HERDR_BIN_PATH", &herdr);
-        open_file_viewer(
-            &file.to_string_lossy(),
-            &origin_cwd,
-            Some("w9:shell"),
-        )
-        .expect("open_file_viewer");
+        open_file_viewer(&file.to_string_lossy(), &origin_cwd, Some("w9:shell"))
+            .expect("open_file_viewer");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
@@ -395,13 +395,14 @@ exit 0
     let other_root = other.canonicalize().unwrap();
     assert!(
         create.windows(2).any(|w| {
-            w[0] == "--cwd" && (w[1] == other_root.to_string_lossy() || w[1] == other.to_string_lossy())
+            w[0] == "--cwd"
+                && (w[1] == other_root.to_string_lossy() || w[1] == other.to_string_lossy())
         }),
         "expected --cwd at file git root {other_root:?}, got {create:?}"
     );
-    assert!(create.windows(2).any(|w| {
-        w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=docs/usage.md"
-    }));
+    assert!(create
+        .windows(2)
+        .any(|w| { w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=docs/usage.md" }));
     assert!(invocations
         .iter()
         .any(|args| args.windows(2).any(|w| w == ["pane", "run"])));

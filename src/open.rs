@@ -158,7 +158,10 @@ fn file_viewer_plugin_root(herdr_bin: &Path) -> io::Result<PathBuf> {
             )
         })?;
     for plugin in plugins {
-        let id = plugin.get("plugin_id").and_then(|v| v.as_str()).unwrap_or("");
+        let id = plugin
+            .get("plugin_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if id == "herdr-file-viewer" {
             if let Some(root) = plugin.get("plugin_root").and_then(|v| v.as_str()) {
                 if !root.is_empty() {

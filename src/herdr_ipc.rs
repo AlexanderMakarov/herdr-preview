@@ -72,13 +72,13 @@ fn read_focused_snapshot_with_bin(herdr_bin: &Path) -> Result<PaneSnapshot, Herd
 }
 
 fn focused_pane_meta(herdr_bin: &Path) -> Result<(String, PathBuf), HerdrIpcError> {
-    let (pane_id, fallback_cwd) =
-        if let Some(meta) = parse_plugin_context_meta(std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON"))
-        {
-            meta
-        } else {
-            fetch_pane_current_meta(herdr_bin)?
-        };
+    let (pane_id, fallback_cwd) = if let Some(meta) =
+        parse_plugin_context_meta(std::env::var_os("HERDR_PLUGIN_CONTEXT_JSON"))
+    {
+        meta
+    } else {
+        fetch_pane_current_meta(herdr_bin)?
+    };
     // Prefer the live pane cwd (shell foreground especially) over launch-context
     // cwd, which can lag or point at the workspace / plugin tree for raw terminals.
     let cwd = fetch_pane_cwd(herdr_bin, &pane_id).unwrap_or(fallback_cwd);
@@ -172,7 +172,9 @@ fn fetch_pane_cwd(herdr_bin: &Path, pane_id: &str) -> Option<PathBuf> {
 
 fn fetch_visible_text(herdr_bin: &Path, pane_id: &str) -> Result<String, HerdrIpcError> {
     let output = Command::new(herdr_bin)
-        .args(["pane", "read", pane_id, "--source", "visible", "--format", "text"])
+        .args([
+            "pane", "read", pane_id, "--source", "visible", "--format", "text",
+        ])
         .output()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {

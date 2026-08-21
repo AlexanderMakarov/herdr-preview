@@ -1,12 +1,23 @@
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    File { path: PathBuf, open_spec: String },
-    Dir { path: PathBuf, open_spec: String },
+    File {
+        path: PathBuf,
+        open_spec: String,
+        ambiguous: bool,
+    },
+    Dir {
+        path: PathBuf,
+        open_spec: String,
+        ambiguous: bool,
+    },
     Url(String),
-    Missing { display: String },
+    Missing {
+        display: String,
+    },
 }
 
 pub fn classify(raw: &str, cwd: &Path) -> Target {
@@ -22,21 +33,31 @@ pub fn classify(raw: &str, cwd: &Path) -> Target {
     let open_spec = build_open_spec(&decoded_path, line_suffix.as_deref());
     let resolved = resolve_path(&decoded_path, cwd);
 
-    if !resolved.exists() {
-        return Target::Missing {
-            display: raw.to_string(),
-        };
+    if resolved.exists() {
+        return existing_target(resolved, open_spec);
     }
 
+    if let Some(collapsed) = resolve_collapsed(&decoded_path, line_suffix.as_deref(), cwd) {
+        return collapsed;
+    }
+
+    Target::Missing {
+        display: raw.to_string(),
+    }
+}
+
+fn existing_target(resolved: PathBuf, open_spec: String) -> Target {
     if resolved.is_dir() {
         Target::Dir {
             path: resolved,
             open_spec,
+            ambiguous: false,
         }
     } else {
         Target::File {
             path: resolved,
             open_spec,
+            ambiguous: false,
         }
     }
 }
@@ -53,28 +74,59 @@ pub fn classify_with_fallbacks(raw: &str, cwd: &Path, fallbacks: &[PathBuf]) -> 
         return primary;
     }
 
+    let mut hits: Vec<Target> = Vec::new();
     for root in fallbacks {
         if root.as_path() == cwd {
             continue;
         }
         match classify(raw, root) {
-            Target::File { path, .. } => {
-                return Target::File {
+            Target::File {
+                path, ambiguous, ..
+            } => {
+                hits.push(Target::File {
                     open_spec: open_spec_under_base(raw, &path, cwd),
                     path,
-                };
+                    ambiguous,
+                });
             }
-            Target::Dir { path, .. } => {
-                return Target::Dir {
+            Target::Dir {
+                path, ambiguous, ..
+            } => {
+                hits.push(Target::Dir {
                     open_spec: open_spec_under_base(raw, &path, cwd),
                     path,
-                };
+                    ambiguous,
+                });
             }
             Target::Url(_) | Target::Missing { .. } => continue,
         }
     }
 
-    primary
+    match hits.len() {
+        0 => primary,
+        1 => hits.pop().expect("len 1"),
+        _ => mark_ambiguous(hits.into_iter().next().expect("len >= 2")),
+    }
+}
+
+fn mark_ambiguous(target: Target) -> Target {
+    match target {
+        Target::File {
+            path, open_spec, ..
+        } => Target::File {
+            path,
+            open_spec,
+            ambiguous: true,
+        },
+        Target::Dir {
+            path, open_spec, ..
+        } => Target::Dir {
+            path,
+            open_spec,
+            ambiguous: true,
+        },
+        other => other,
+    }
 }
 
 /// True when `path` looks like a git/claude worktree directory (`…/worktrees/…`).
@@ -227,10 +279,7 @@ fn expand_tilde(path: &str) -> String {
     }
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = home_dir() {
-            return format!(
-                "{home}{}{rest}",
-                if home.ends_with('/') { "" } else { "/" }
-            );
+            return format!("{home}{}{rest}", if home.ends_with('/') { "" } else { "/" });
         }
     }
     path.to_string()
@@ -241,6 +290,137 @@ fn home_dir() -> Option<String> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn split_collapse_parts(path: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut rest = path;
+    let mut found = false;
+    loop {
+        let ascii = rest.find("...");
+        let uni = rest.find('…');
+        let hit = match (ascii, uni) {
+            (None, None) => None,
+            (Some(a), Some(u)) if a <= u => Some((a, 3)),
+            (Some(_), Some(u)) => Some((u, '…'.len_utf8())),
+            (Some(a), None) => Some((a, 3)),
+            (None, Some(u)) => Some((u, '…'.len_utf8())),
+        };
+        let Some((idx, len)) = hit else {
+            break;
+        };
+        found = true;
+        parts.push(rest[..idx].to_string());
+        rest = &rest[idx + len..];
+    }
+    if !found {
+        return None;
+    }
+    parts.push(rest.to_string());
+    if !parts.iter().any(|part| part.contains('/')) {
+        return None;
+    }
+    Some(parts)
+}
+
+fn rel_matches_collapse(rel: &str, parts: &[String]) -> bool {
+    let leading_wild = parts.first().is_some_and(String::is_empty);
+    let trailing_wild = parts.last().is_some_and(String::is_empty);
+    let literals: Vec<&str> = parts
+        .iter()
+        .map(String::as_str)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if literals.is_empty() {
+        return false;
+    }
+
+    let mut pos = 0usize;
+    for (index, lit) in literals.iter().enumerate() {
+        let last = index + 1 == literals.len();
+        if last && !trailing_wild {
+            return rel.get(pos..).is_some_and(|tail| tail.ends_with(lit));
+        }
+        if index == 0 && !leading_wild {
+            if !rel.starts_with(lit) {
+                return false;
+            }
+            pos = lit.len();
+            continue;
+        }
+        match rel.get(pos..).and_then(|tail| tail.find(lit)) {
+            Some(offset) => pos += offset + lit.len(),
+            None => return false,
+        }
+    }
+    trailing_wild
+}
+
+fn rel_slash(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn skip_walk_dir(name: &str) -> bool {
+    // `worktrees` is skipped on the cwd walk so nested git/Claude worktrees
+    // do not lex-steal the hit; `classify_with_fallbacks` searches those roots.
+    matches!(name, ".git" | "node_modules" | "target" | "worktrees")
+}
+
+fn collect_suffix_matches(root: &Path, parts: &[String], out: &mut Vec<PathBuf>) {
+    fn rec(dir: &Path, root: &Path, parts: &[String], out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                if skip_walk_dir(&name.to_string_lossy()) {
+                    continue;
+                }
+                if rel_matches_collapse(&rel_slash(root, &path), parts) {
+                    out.push(path.clone());
+                }
+                rec(&path, root, parts, out);
+            } else if file_type.is_file() && rel_matches_collapse(&rel_slash(root, &path), parts) {
+                out.push(path);
+            }
+        }
+    }
+    rec(root, root, parts, out);
+}
+
+fn resolve_collapsed(decoded_path: &str, line_suffix: Option<&str>, cwd: &Path) -> Option<Target> {
+    let parts = split_collapse_parts(decoded_path)?;
+    let mut matches = Vec::new();
+    collect_suffix_matches(cwd, &parts, &mut matches);
+    matches.sort_by_key(|path| rel_slash(cwd, path));
+    let ambiguous = matches.len() > 1;
+    let path = matches.into_iter().next()?;
+    let rel = rel_slash(cwd, &path);
+    let open_spec = build_open_spec(&rel, line_suffix);
+    Some(if path.is_dir() {
+        Target::Dir {
+            path,
+            open_spec,
+            ambiguous,
+        }
+    } else {
+        Target::File {
+            path,
+            open_spec,
+            ambiguous,
+        }
+    })
 }
 
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
@@ -291,5 +471,24 @@ mod tests {
     #[test]
     fn percent_decode_replaces_encoded_space() {
         assert_eq!(percent_decode("Tray%20status"), "Tray status");
+    }
+
+    #[test]
+    fn collapse_parts_match_internal_and_leading() {
+        let middle = split_collapse_parts("context/spec/…/review.md").unwrap();
+        assert!(rel_matches_collapse(
+            "context/spec/009-one-call-per-source-synth/review.md",
+            &middle
+        ));
+        assert!(!rel_matches_collapse("context/spec/review.md", &middle));
+
+        let leading = split_collapse_parts("...xt/spec/foo.md").unwrap();
+        assert!(rel_matches_collapse("context/spec/foo.md", &leading));
+
+        let both = split_collapse_parts("...xt/spec/…/review.md").unwrap();
+        assert!(rel_matches_collapse(
+            "context/spec/009-one-call-per-source-synth/review.md",
+            &both
+        ));
     }
 }

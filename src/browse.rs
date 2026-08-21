@@ -271,8 +271,7 @@ const DIM: &str = "\x1b[2;90m";
 const RESET: &str = "\x1b[0m";
 const REV: &str = "\x1b[7m";
 const LEGEND: &str = "browse · j/k move · enter open · h parent · l enter · q cancel";
-const OUTSIDE_TAB: &str =
-    "outside this tab's cwd · file-viewer opens in a new tab · j/k enter q";
+const OUTSIDE_TAB: &str = "outside this tab's cwd · file-viewer opens in a new tab · j/k enter q";
 
 pub fn render_browse(state: &BrowseState, rows: u16, cols: u16) -> String {
     let rows = rows.max(2) as usize;
