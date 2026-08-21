@@ -142,6 +142,31 @@ fn with_path_only<F: FnOnce()>(root: &Path, f: F) {
     }
 }
 
+/// Like [`with_path_only`], but keeps system dirs on PATH so real `git` /
+/// shells remain reachable. Needed when a test must call `git` while holding
+/// the env lock (parallel tests otherwise strip PATH to the fixture root).
+fn with_path_plus_system<F: FnOnce()>(root: &Path, f: F) {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let old_path = std::env::var_os("PATH");
+    let old_herdr = std::env::var_os("HERDR_BIN_PATH");
+    let system = old_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| {
+            "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin".to_string()
+        });
+    std::env::set_var("PATH", format!("{}:{system}", root.display()));
+    f();
+    match old_herdr {
+        Some(value) => std::env::set_var("HERDR_BIN_PATH", value),
+        None => std::env::remove_var("HERDR_BIN_PATH"),
+    }
+    match old_path {
+        Some(value) => std::env::set_var("PATH", value),
+        None => std::env::remove_var("PATH"),
+    }
+}
+
 #[test]
 fn detect_file_viewer_true_when_plugin_listed() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -364,17 +389,19 @@ exit 0
     fs::create_dir_all(other.join("docs")).unwrap();
     let file = other.join("docs/usage.md");
     fs::write(&file, "# usage\n").unwrap();
-    let status = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&other)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .status()
-        .expect("git init");
-    assert!(status.success(), "git init other tree");
 
-    with_path_only(&root, || {
-        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", root.display()));
+    // Hold PATH lock for git init + open: other tests set PATH to fixture-only,
+    // which races `Command::new("git")` on macOS CI (NotFound).
+    with_path_plus_system(&root, || {
+        let status = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&other)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init other tree");
+
         std::env::set_var("HERDR_BIN_PATH", &herdr);
         open_file_viewer(&file.to_string_lossy(), &origin_cwd, Some("w9:shell"))
             .expect("open_file_viewer");
