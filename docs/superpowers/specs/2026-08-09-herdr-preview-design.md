@@ -71,12 +71,13 @@ Placement for hints and for `less`: overlay/popup above the current application 
 
 | Kind | Action |
 | --- | --- |
-| Existing regular file | `open_preview` (FV or `less`; binary handling left to the opener) |
-| Directory | browse overlay (always); file chosen → `open_preview` |
+| Existing regular file | `open_preview` (FV or `less`; binary handling left to the opener). Hint: green + letter. |
+| Directory | browse overlay (always); file chosen → `open_preview`. Hint: green + letter (yellow + letter if several collapsed matches). |
 | `http://` / `https://` | System browser |
-| Missing path after resolve | Skip + notice |
+| Missing path after resolve | Hinted in red with no letter (not openable). |
+| Collapsed `...` / `…` (leading and/or internal component gap; some remainder contains `/`) | Walk cwd then git/Claude worktree fallbacks; skip `.git` / `node_modules` / `target` / `worktrees`. Unique hit: green + letter. Multiple hits: one letter, lexicographic/first-fallback file, yellow. No hit: red, no letter. |
 
-Tokenization must not truncate on the first whitespace inside a path; decode `%20` for filesystem candidates.
+Tokenization must not truncate on the first whitespace inside a path; decode `%20` for filesystem candidates. `NAME=/path` env assignments contribute only the path after `=`. Tokens like `4.4s` / `2.03s` are command durations, not filename continuations.
 
 File-viewer OPEN paths must live under the viewer’s tree root (usually the repo/worktree of the summon cwd). Out-of-root absolute paths may fail; surface FV’s failure rather than silently rewriting.
 

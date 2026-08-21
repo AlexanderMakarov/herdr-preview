@@ -22,7 +22,8 @@ pub const HINT_KEYS: &str = "asdfghjklwertyuiopzxcvbnm";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintEntry {
-    pub key: char,
+    /// Letter to open this target. `None` for missing paths (red highlight only).
+    pub key: Option<char>,
     /// Byte offset into the origin snapshot (`visible_text`).
     pub start: usize,
     pub end: usize,
@@ -97,27 +98,35 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
     }
 
     let mut entries = Vec::new();
+    let mut key_index = 0usize;
     for (span, primary_target) in unique.into_iter().zip(primary) {
         let target = if matches!(primary_target, Target::Missing { .. }) && !fallbacks.is_empty() {
             classify_with_fallbacks(&span.raw, cwd, &fallbacks)
         } else {
             primary_target
         };
-        // MVP overlay is filesystem paths only; http(s) stays Ctrl+click → browser.
-        if matches!(target, Target::Missing { .. } | Target::Url(_)) {
+        // Overlay shows files, dirs, and missing path-like tokens (red). http(s) stays Ctrl+click.
+        if matches!(target, Target::Url(_)) {
             continue;
         }
-        if let Some(key) = hint_key_for_index(entries.len()) {
-            entries.push(HintEntry {
-                key,
-                start: span.start,
-                end: span.end,
-                raw: span.raw,
-                target,
-            });
+        let key = if matches!(target, Target::Missing { .. }) {
+            None
         } else {
-            break;
-        }
+            match hint_key_for_index(key_index) {
+                Some(k) => {
+                    key_index += 1;
+                    Some(k)
+                }
+                None => continue,
+            }
+        };
+        entries.push(HintEntry {
+            key,
+            start: span.start,
+            end: span.end,
+            raw: span.raw,
+            target,
+        });
     }
 
     entries
@@ -129,10 +138,37 @@ pub fn hint_key_for_index(index: usize) -> Option<char> {
 
 pub fn target_kind_label(target: &Target) -> &'static str {
     match target {
+        Target::File {
+            ambiguous: true, ..
+        } => "file-warn",
+        Target::Dir {
+            ambiguous: true, ..
+        } => "dir-warn",
         Target::File { .. } => "file",
         Target::Dir { .. } => "dir",
         Target::Url(_) => "url",
         Target::Missing { .. } => "missing",
+    }
+}
+
+fn hint_token_colors<'a>(
+    target: &Target,
+    unique_key: &'a str,
+    unique_tok: &'a str,
+    warn_key: &'a str,
+    warn_tok: &'a str,
+    miss_key: &'a str,
+    miss_tok: &'a str,
+) -> (&'a str, &'a str) {
+    match target {
+        Target::Missing { .. } => (miss_key, miss_tok),
+        Target::File {
+            ambiguous: true, ..
+        }
+        | Target::Dir {
+            ambiguous: true, ..
+        } => (warn_key, warn_tok),
+        _ => (unique_key, unique_tok),
     }
 }
 
@@ -173,10 +209,7 @@ fn resolve_herdr_bin() -> PathBuf {
 }
 
 fn spawn_hint_overlay(entries: &[HintEntry], snapshot: &PaneSnapshot) -> Result<(), HintError> {
-    let dir = std::env::temp_dir().join(format!(
-        "herdr-preview-hint-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("herdr-preview-hint-{}", std::process::id()));
     fs::create_dir_all(&dir)?;
     let targets_path = dir.join("targets.tsv");
     let snap_path = dir.join("snap.txt");
@@ -236,7 +269,13 @@ pub fn serialize_entries(entries: &[HintEntry]) -> String {
         let path = path_for_target(&entry.target);
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{kind}\t{open_spec}\t{path}\n",
-            entry.key, entry.start, entry.end, entry.raw
+            entry
+                .key
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".into()),
+            entry.start,
+            entry.end,
+            entry.raw
         ));
     }
     out
@@ -258,14 +297,18 @@ pub fn parse_entries_tsv(data: &str) -> Result<Vec<HintEntry>, HintError> {
         }
         let parts: Vec<&str> = line.splitn(7, '\t').collect();
         if parts.len() < 7 {
-            return Err(HintError::OverlayEnv(format!(
-                "bad targets line: {line}"
-            )));
+            return Err(HintError::OverlayEnv(format!("bad targets line: {line}")));
         }
-        let key = parts[0]
-            .chars()
-            .next()
-            .ok_or_else(|| HintError::OverlayEnv("empty key".into()))?;
+        let key = if parts[0] == "-" || parts[0].is_empty() {
+            None
+        } else {
+            Some(
+                parts[0]
+                    .chars()
+                    .next()
+                    .ok_or_else(|| HintError::OverlayEnv("empty key".into()))?,
+            )
+        };
         let start: usize = parts[1]
             .parse()
             .map_err(|_| HintError::OverlayEnv(format!("bad start: {}", parts[1])))?;
@@ -277,15 +320,18 @@ pub fn parse_entries_tsv(data: &str) -> Result<Vec<HintEntry>, HintError> {
         let open_spec = parts[5].to_string();
         let path = parts[6];
         let target = match kind {
-            "file" => Target::File {
+            "file" | "file-warn" => Target::File {
                 path: PathBuf::from(path),
                 open_spec,
+                ambiguous: kind == "file-warn",
             },
-            "dir" => Target::Dir {
+            "dir" | "dir-warn" => Target::Dir {
                 path: PathBuf::from(path),
                 open_spec,
+                ambiguous: kind == "dir-warn",
             },
             "url" => Target::Url(open_spec),
+            "missing" => Target::Missing { display: open_spec },
             other => {
                 return Err(HintError::OverlayEnv(format!("unknown kind: {other}")));
             }
@@ -317,9 +363,7 @@ pub fn run_hint_overlay() -> Result<(), HintError> {
     let choice = overlay_pick(&entries, &snapshot)?;
     match choice {
         OverlayChoice::Cancel => Ok(()),
-        OverlayChoice::Pick(index) => {
-            open_entry(&entries[index], &cwd, origin_pane.as_deref())
-        }
+        OverlayChoice::Pick(index) => open_entry(&entries[index], &cwd, origin_pane.as_deref()),
     }
 }
 
@@ -346,7 +390,10 @@ fn overlay_pick(entries: &[HintEntry], snapshot: &str) -> Result<OverlayChoice, 
                 if matches!(key, b'q' | b'Q') {
                     return Ok(OverlayChoice::Cancel);
                 }
-                if let Some(index) = entries.iter().position(|entry| entry.key == key as char) {
+                if let Some(index) = entries
+                    .iter()
+                    .position(|entry| entry.key == Some(key as char))
+                {
                     return Ok(OverlayChoice::Pick(index));
                 }
             }
@@ -441,8 +488,12 @@ fn render_overlay(
     // - Legend overwrites the last physical row (no extra newline that scrolls).
     const DIM: &str = "\x1b[2;90m";
     const RESET: &str = "\x1b[0m";
-    const H_KEY: &str = "\x1b[0;1;30;48;2;255;253;1m";
-    const H_TOK: &str = "\x1b[0;38;2;255;253;1m";
+    const H_KEY: &str = "\x1b[0;1;30;48;2;80;200;80m";
+    const H_TOK: &str = "\x1b[0;38;2;80;200;80m";
+    const H_KEY_WARN: &str = "\x1b[0;1;30;48;2;255;253;1m";
+    const H_TOK_WARN: &str = "\x1b[0;38;2;255;253;1m";
+    const H_KEY_MISS: &str = "\x1b[0;1;37;48;2;200;60;60m";
+    const H_TOK_MISS: &str = "\x1b[0;38;2;220;80;80m";
 
     let rows = rows.max(2) as usize;
     let cols = cols.max(20) as usize;
@@ -502,7 +553,19 @@ fn render_overlay(
         ordered.sort_by_key(|e| std::cmp::Reverse(e.start));
         for entry in ordered {
             if let Some(found) = line.find(&entry.raw) {
-                let styled = style_token(entry.key, &entry.raw, H_KEY, H_TOK, RESET, DIM);
+                let (h_key, h_tok) = hint_token_colors(
+                    &entry.target,
+                    H_KEY,
+                    H_TOK,
+                    H_KEY_WARN,
+                    H_TOK_WARN,
+                    H_KEY_MISS,
+                    H_TOK_MISS,
+                );
+                let styled = match entry.key {
+                    Some(key) => style_token(key, &entry.raw, h_key, h_tok, RESET, DIM),
+                    None => format!("{h_tok}{}{RESET}{DIM}", entry.raw),
+                };
                 line.replace_range(found..found + entry.raw.len(), &styled);
             }
         }
@@ -583,7 +646,10 @@ fn tty_size(fd: libc::c_int) -> io::Result<(u16, u16)> {
 }
 
 fn open_tty() -> io::Result<fs::File> {
-    fs::OpenOptions::new().read(true).write(true).open("/dev/tty")
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
 }
 
 fn read_key(tty: &mut fs::File) -> io::Result<KeyPress> {
@@ -645,7 +711,9 @@ pub fn open_preview_file(
 ) -> Result<(), HintError> {
     let herdr_bin = resolve_herdr_bin();
     match classify(&path.to_string_lossy(), cwd) {
-        Target::File { path, open_spec } => {
+        Target::File {
+            path, open_spec, ..
+        } => {
             if detect_file_viewer(&herdr_bin) {
                 open_file_viewer(&open_spec, cwd, origin_pane_id)?;
             } else {
@@ -680,7 +748,10 @@ pub fn open_entry(
             open_file_viewer(&open_spec, cwd, origin_pane_id)?;
         }
         OpenRoute::Less => {
-            if let Target::File { path, open_spec } = &entry.target {
+            if let Target::File {
+                path, open_spec, ..
+            } = &entry.target
+            {
                 let line = line_from_open_spec(open_spec);
                 open_less(path, line, &herdr_bin)?;
             }
@@ -732,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn build_entries_skips_missing_urls_and_assigns_keys() {
+    fn build_entries_skips_urls_and_assigns_keys() {
         let root = temp_fixture("build");
         let cwd = root.join("repo");
         fs::create_dir_all(cwd.join("src")).unwrap();
@@ -741,10 +812,13 @@ mod tests {
         let text = "see src/app.rs and src/missing.rs\nhttps://example.com\n";
         let entries = build_entries(text, &cwd);
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].key, 'a');
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, Some('a'));
         assert_eq!(entries[0].raw, "src/app.rs");
         assert!(matches!(entries[0].target, Target::File { .. }));
+        assert_eq!(entries[1].raw, "src/missing.rs");
+        assert_eq!(entries[1].key, None);
+        assert!(matches!(entries[1].target, Target::Missing { .. }));
         assert!(entries[0].end > entries[0].start);
     }
 
@@ -781,27 +855,29 @@ mod tests {
         fs::set_permissions(&herdr, fs::Permissions::from_mode(0o755)).unwrap();
 
         let file = HintEntry {
-            key: 'a',
+            key: Some('a'),
             start: 0,
             end: 4,
             raw: "a.rs".into(),
             target: Target::File {
                 path: PathBuf::from("a.rs"),
                 open_spec: "a.rs".into(),
+                ambiguous: false,
             },
         };
         let dir = HintEntry {
-            key: 's',
+            key: Some('s'),
             start: 0,
             end: 5,
             raw: "docs/".into(),
             target: Target::Dir {
                 path: PathBuf::from("docs"),
                 open_spec: "docs/".into(),
+                ambiguous: false,
             },
         };
         let url = HintEntry {
-            key: 'd',
+            key: Some('d'),
             start: 0,
             end: 9,
             raw: "https://x".into(),

@@ -27,7 +27,8 @@ fn headless_list_mode_prints_path_targets_not_urls() {
 
     assert!(output.contains("docs/plan.md"));
     assert!(!output.contains("https://github.com/org/repo/pull/1"));
-    assert!(!output.contains("missing.md"));
+    assert!(output.contains("docs/missing.md"));
+    assert!(output.contains("\tmissing\t"));
 }
 
 #[test]
@@ -86,7 +87,9 @@ fn builds_hint_for_path_only_in_visible_worktree() {
         .find(|e| e.raw == rel)
         .expect("relative path in worktree should be hinted");
     match &hit.target {
-        herdr_preview::classify::Target::File { open_spec, path } => {
+        herdr_preview::classify::Target::File {
+            open_spec, path, ..
+        } => {
             assert_eq!(
                 open_spec,
                 &format!(".claude/worktrees/feat-109-explain-the-product/{rel}")
@@ -114,7 +117,9 @@ fn builds_hint_for_worktree_path_even_when_worktree_not_on_screen() {
         .find(|e| e.raw == rel)
         .expect("disk worktree should rescue the path without it being on-screen");
     match &hit.target {
-        herdr_preview::classify::Target::File { open_spec, path } => {
+        herdr_preview::classify::Target::File {
+            open_spec, path, ..
+        } => {
             assert_eq!(
                 path.canonicalize().unwrap(),
                 wt.join(rel).canonicalize().unwrap()
@@ -126,4 +131,81 @@ fn builds_hint_for_worktree_path_even_when_worktree_not_on_screen() {
         }
         other => panic!("expected file target, got {other:?}"),
     }
+}
+
+#[test]
+fn hints_collapsed_path_and_marks_ambiguous_kind() {
+    let root = temp_fixture("collapsed-hint");
+    let cwd = root.join("repo");
+    let a = cwd.join("aaa/xt/spec/009-one-call-per-source-synth/review.md");
+    let z = cwd.join("zzz/xt/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(z.parent().unwrap()).unwrap();
+    fs::write(&a, "a\n").unwrap();
+    fs::write(&z, "z\n").unwrap();
+
+    let raw = "...xt/spec/009-one-call-per-source-synth/review.md";
+    let entries = build_entries(&format!("Read {raw}\n"), &cwd);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].raw, raw);
+    match &entries[0].target {
+        herdr_preview::classify::Target::File {
+            path, ambiguous, ..
+        } => {
+            assert_eq!(path, &a);
+            assert!(ambiguous);
+        }
+        other => panic!("expected ambiguous file, got {other:?}"),
+    }
+    let tsv = serialize_entries(&entries);
+    assert!(
+        tsv.contains("\tfile-warn\t"),
+        "warn kind for overlay color: {tsv}"
+    );
+}
+
+#[test]
+fn hints_internal_ellipsis_as_existing_file() {
+    let root = temp_fixture("collapsed-middle-hint");
+    let cwd = root.join("repo");
+    let dest = cwd.join("context/spec/009-one-call-per-source-synth/review.md");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, "# review\n").unwrap();
+
+    let raw = "context/spec/…/review.md";
+    let entries = build_entries(&format!("Read {raw}\n"), &cwd);
+    let hit = entries
+        .iter()
+        .find(|e| e.raw == raw)
+        .expect("internal ellipsis hinted");
+    match &hit.target {
+        herdr_preview::classify::Target::File {
+            path, ambiguous, ..
+        } => {
+            assert_eq!(path, &dest);
+            assert!(!*ambiguous);
+        }
+        other => panic!("expected unique file, got {other:?}"),
+    }
+    assert!(serialize_entries(&entries).contains("\tfile\t"));
+}
+
+#[test]
+fn hints_missing_path_with_missing_kind() {
+    let root = temp_fixture("missing-hint");
+    let cwd = root.join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let entries = build_entries("open docs/nope.md\n", &cwd);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key, None);
+    assert!(matches!(
+        entries[0].target,
+        herdr_preview::classify::Target::Missing { .. }
+    ));
+    let tsv = serialize_entries(&entries);
+    assert!(
+        tsv.starts_with("-\t"),
+        "missing must not take a letter: {tsv}"
+    );
+    assert!(tsv.contains("\tmissing\t"));
 }

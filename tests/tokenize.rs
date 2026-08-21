@@ -115,3 +115,41 @@ fn finds_tilde_home_paths() {
     assert!(raws.contains(&"~/code/llm-wiki/README.md"), "{raws:?}");
     assert!(raws.contains(&"~/scripts/"), "{raws:?}");
 }
+
+#[test]
+fn finds_cursor_style_collapsed_path() {
+    let text = "    Read ...xt/spec/009-one-call-per-source-synth/review.md";
+    let spans = find_candidates(text);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        spans[0].raw,
+        "...xt/spec/009-one-call-per-source-synth/review.md"
+    );
+}
+
+#[test]
+fn splits_env_assignment_keeping_path_after_equals() {
+    let text = "CARGO_TARGET_DIR=/home/i4ellendger/code/herdr-preview/target cargo build";
+    let spans = find_candidates(text);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(
+        raws.contains(&"/home/i4ellendger/code/herdr-preview/target"),
+        "{raws:?}"
+    );
+    assert!(
+        !raws.iter().any(|r| r.contains("CARGO_TARGET_DIR=")),
+        "{raws:?}"
+    );
+}
+
+#[test]
+fn does_not_join_command_duration_onto_extensionless_binary() {
+    let text = "/home/i4ellendger/code/herdr-preview/target/release/herdr-preview 4.4s";
+    let spans = find_candidates(text);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(
+        raws.contains(&"/home/i4ellendger/code/herdr-preview/target/release/herdr-preview"),
+        "{raws:?}"
+    );
+    assert!(!raws.iter().any(|r| r.contains("4.4s")), "{raws:?}");
+}
