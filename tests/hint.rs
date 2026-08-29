@@ -209,3 +209,69 @@ fn hints_missing_path_with_missing_kind() {
     );
     assert!(tsv.contains("\tmissing\t"));
 }
+
+/// Agent panes often print the same absolute path twice (e.g. inside `$ ls -la …`
+/// and again as a clean follow-up line). Deduping by `raw` left only the first
+/// span, so the visible standalone path stayed unhighlighted.
+#[test]
+fn paints_every_occurrence_of_duplicate_path_with_shared_key() {
+    let root = temp_fixture("dup-path");
+    let cwd = root.join("repo");
+    fs::create_dir_all(cwd.join("docs")).unwrap();
+    fs::write(cwd.join("docs/plan.md"), "# plan\n").unwrap();
+
+    let abs = cwd.join("docs/plan.md");
+    let abs_s = abs.to_string_lossy();
+    let text = format!("$ ls -la {abs_s}\n\n  {abs_s}\n");
+    let entries = build_entries(&text, &cwd);
+
+    let hits: Vec<_> = entries.iter().filter(|e| e.raw == abs_s).collect();
+    assert_eq!(
+        hits.len(),
+        2,
+        "both occurrences must stay as hint entries, got: {:?}",
+        entries
+            .iter()
+            .map(|e| (e.key, e.start, &e.raw))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(hits[0].key, hits[1].key);
+    assert!(hits[0].key.is_some(), "existing file must get a letter");
+    assert!(hits[0].start < hits[1].start);
+    assert_eq!(&text[hits[0].start..hits[0].end], abs_s.as_ref());
+    assert_eq!(&text[hits[1].start..hits[1].end], abs_s.as_ref());
+}
+
+#[test]
+fn duplicate_missing_paths_all_get_no_key() {
+    let root = temp_fixture("dup-missing");
+    let cwd = root.join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let text = "docs/nope.md\n\n  docs/nope.md\n";
+    let hits: Vec<_> = build_entries(text, &cwd)
+        .into_iter()
+        .filter(|e| e.raw == "docs/nope.md")
+        .collect();
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|e| e.key.is_none()));
+}
+
+#[test]
+fn duplicate_paths_on_same_line_keep_both_spans() {
+    let root = temp_fixture("dup-same-line");
+    let cwd = root.join("repo");
+    fs::create_dir_all(cwd.join("docs")).unwrap();
+    fs::write(cwd.join("docs/plan.md"), "# plan\n").unwrap();
+
+    let abs = cwd.join("docs/plan.md");
+    let abs_s = abs.to_string_lossy();
+    let text = format!("{abs_s} then {abs_s}\n");
+    let hits: Vec<_> = build_entries(&text, &cwd)
+        .into_iter()
+        .filter(|e| e.raw == abs_s)
+        .collect();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].key, hits[1].key);
+    assert!(hits[0].key.is_some());
+}
