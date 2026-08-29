@@ -67,21 +67,27 @@ impl From<io::Error> for HintError {
 }
 
 pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
-    let mut unique: Vec<Span> = Vec::new();
-    let mut seen_raw = Vec::new();
-    for span in find_candidates(text) {
-        if seen_raw.iter().any(|existing| existing == &span.raw) {
-            continue;
+    // Keep every on-screen span. Agent panes often repeat the same absolute
+    // path (e.g. inside `$ ls -la …` and again as a clean follow-up line);
+    // dropping duplicates by `raw` left later copies unhighlighted.
+    let spans: Vec<Span> = find_candidates(text);
+
+    // Classify once per distinct raw, then reuse — shared letter for repeats.
+    let mut raw_order: Vec<String> = Vec::new();
+    for span in &spans {
+        if !raw_order.iter().any(|existing| existing == &span.raw) {
+            raw_order.push(span.raw.clone());
         }
-        seen_raw.push(span.raw.clone());
-        unique.push(span);
     }
 
     // Classify everything against the pane cwd first so later-visible worktree
     // dirs can rescue earlier missing relative paths in a second pass.
-    let primary: Vec<Target> = unique.iter().map(|span| classify(&span.raw, cwd)).collect();
+    let primary_by_raw: Vec<(String, Target)> = raw_order
+        .iter()
+        .map(|raw| (raw.clone(), classify(raw, cwd)))
+        .collect();
     let mut fallbacks: Vec<PathBuf> = Vec::new();
-    for target in &primary {
+    for (_, target) in &primary_by_raw {
         if let Target::Dir { path, .. } = target {
             if is_worktree_dir(path) && !fallbacks.iter().any(|existing| existing == path) {
                 fallbacks.push(path.clone());
@@ -97,14 +103,19 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
         }
     }
 
-    let mut entries = Vec::new();
-    let mut key_index = 0usize;
-    for (span, primary_target) in unique.into_iter().zip(primary) {
+    let mut target_by_raw: Vec<(String, Target)> = Vec::new();
+    for (raw, primary_target) in primary_by_raw {
         let target = if matches!(primary_target, Target::Missing { .. }) && !fallbacks.is_empty() {
-            classify_with_fallbacks(&span.raw, cwd, &fallbacks)
+            classify_with_fallbacks(&raw, cwd, &fallbacks)
         } else {
             primary_target
         };
+        target_by_raw.push((raw, target));
+    }
+
+    let mut key_by_raw: Vec<(String, Option<char>)> = Vec::new();
+    let mut key_index = 0usize;
+    for (raw, target) in &target_by_raw {
         // Overlay shows files, dirs, and missing path-like tokens (red). http(s) stays Ctrl+click.
         if matches!(target, Target::Url(_)) {
             continue;
@@ -120,12 +131,23 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
                 None => continue,
             }
         };
+        key_by_raw.push((raw.clone(), key));
+    }
+
+    let mut entries = Vec::new();
+    for span in spans {
+        let Some((_, key)) = key_by_raw.iter().find(|(raw, _)| raw == &span.raw) else {
+            continue;
+        };
+        let Some((_, target)) = target_by_raw.iter().find(|(raw, _)| raw == &span.raw) else {
+            continue;
+        };
         entries.push(HintEntry {
-            key,
+            key: *key,
             start: span.start,
             end: span.end,
             raw: span.raw,
-            target,
+            target: target.clone(),
         });
     }
 
@@ -549,25 +571,21 @@ fn render_overlay(
             continue;
         }
         let line = &mut body_lines[row];
+        let abs_line = offset + row.saturating_sub(pad);
+        let line_origin = line_starts.get(abs_line).copied().unwrap_or(0);
         let mut ordered = entries_here.clone();
+        // Right-to-left so earlier byte offsets stay valid after replace_range.
         ordered.sort_by_key(|e| std::cmp::Reverse(e.start));
         for entry in ordered {
-            if let Some(found) = line.find(&entry.raw) {
-                let (h_key, h_tok) = hint_token_colors(
-                    &entry.target,
-                    H_KEY,
-                    H_TOK,
-                    H_KEY_WARN,
-                    H_TOK_WARN,
-                    H_KEY_MISS,
-                    H_TOK_MISS,
-                );
-                let styled = match entry.key {
-                    Some(key) => style_token(key, &entry.raw, h_key, h_tok, RESET, DIM),
-                    None => format!("{h_tok}{}{RESET}{DIM}", entry.raw),
-                };
-                line.replace_range(found..found + entry.raw.len(), &styled);
+            let rel = entry.start.saturating_sub(line_origin);
+            if rel + entry.raw.len() > line.len() || !line[rel..].starts_with(&entry.raw) {
+                // Fallback if snapshot line boundaries drifted; still better than nothing.
+                if let Some(found) = line.find(&entry.raw) {
+                    paint_token_at(line, found, entry, H_KEY, H_TOK, H_KEY_WARN, H_TOK_WARN, H_KEY_MISS, H_TOK_MISS, RESET, DIM);
+                }
+                continue;
             }
+            paint_token_at(line, rel, entry, H_KEY, H_TOK, H_KEY_WARN, H_TOK_WARN, H_KEY_MISS, H_TOK_MISS, RESET, DIM);
         }
     }
 
@@ -578,9 +596,14 @@ fn render_overlay(
         let truncated = truncate_cells(line, cols);
         writeln!(out, "{DIM}{truncated}{RESET}{ANSI_CLR_EOL}")?;
     }
+    let distinct = {
+        let mut raws: Vec<&str> = entries.iter().map(|e| e.raw.as_str()).collect();
+        raws.sort_unstable();
+        raws.dedup();
+        raws.len()
+    };
     let legend = format!(
-        " hint · {} path(s) · letter opens · q/Esc cancel",
-        entries.len()
+        " hint · {distinct} path(s) · letter opens · q/Esc cancel"
     );
     let legend = truncate_cells(&legend, cols);
     write!(
@@ -602,6 +625,35 @@ fn split_snapshot_lines(snapshot: &str) -> Vec<String> {
 fn style_token(key: char, raw: &str, h_key: &str, h_tok: &str, reset: &str, dim: &str) -> String {
     let rest: String = raw.chars().skip(1).collect();
     format!("{h_key}{key}{reset}{h_tok}{rest}{reset}{dim}")
+}
+
+fn paint_token_at(
+    line: &mut String,
+    at: usize,
+    entry: &HintEntry,
+    h_key: &str,
+    h_tok: &str,
+    h_key_warn: &str,
+    h_tok_warn: &str,
+    h_key_miss: &str,
+    h_tok_miss: &str,
+    reset: &str,
+    dim: &str,
+) {
+    let (key_s, tok_s) = hint_token_colors(
+        &entry.target,
+        h_key,
+        h_tok,
+        h_key_warn,
+        h_tok_warn,
+        h_key_miss,
+        h_tok_miss,
+    );
+    let styled = match entry.key {
+        Some(key) => style_token(key, &entry.raw, key_s, tok_s, reset, dim),
+        None => format!("{tok_s}{}{reset}{dim}", entry.raw),
+    };
+    line.replace_range(at..at + entry.raw.len(), &styled);
 }
 
 /// Truncate to about `cols` terminal cells, ignoring CSI sequences for counting.
