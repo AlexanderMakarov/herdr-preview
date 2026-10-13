@@ -129,11 +129,11 @@ fn finds_cursor_style_collapsed_path() {
 
 #[test]
 fn splits_env_assignment_keeping_path_after_equals() {
-    let text = "CARGO_TARGET_DIR=/home/i4ellendger/code/herdr-preview/target cargo build";
+    let text = "CARGO_TARGET_DIR=/home/user/code/herdr-preview/target cargo build";
     let spans = find_candidates(text);
     let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
     assert!(
-        raws.contains(&"/home/i4ellendger/code/herdr-preview/target"),
+        raws.contains(&"/home/user/code/herdr-preview/target"),
         "{raws:?}"
     );
     assert!(
@@ -144,11 +144,11 @@ fn splits_env_assignment_keeping_path_after_equals() {
 
 #[test]
 fn does_not_join_command_duration_onto_extensionless_binary() {
-    let text = "/home/i4ellendger/code/herdr-preview/target/release/herdr-preview 4.4s";
+    let text = "/home/user/code/herdr-preview/target/release/herdr-preview 4.4s";
     let spans = find_candidates(text);
     let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
     assert!(
-        raws.contains(&"/home/i4ellendger/code/herdr-preview/target/release/herdr-preview"),
+        raws.contains(&"/home/user/code/herdr-preview/target/release/herdr-preview"),
         "{raws:?}"
     );
     assert!(!raws.iter().any(|r| r.contains("4.4s")), "{raws:?}");

@@ -16,6 +16,43 @@ pub fn find_candidates(text: &str) -> Vec<Span> {
     spans
 }
 
+/// End offsets where a span ending at `end` could continue through the
+/// space-separated words that follow it on the same line; callers probe the
+/// disk to pick one. The run stops at punctuation (`,` `|` `#` `·` …), at a
+/// duration like `4.4s`, and right after a word ending in a file extension.
+pub fn spaced_continuation_ends(text: &str, end: usize) -> Vec<usize> {
+    let line_end = text[end..].find('\n').map_or(text.len(), |rel| end + rel);
+    let rest = &text[end..line_end];
+    let mut ends = Vec::new();
+    if !rest.starts_with(' ') {
+        return ends;
+    }
+    for (word_start, raw_end) in word_bounds(rest) {
+        let (_, word_end) = trim_wrappers(rest, (word_start, raw_end));
+        let word = &rest[word_start..word_end];
+        if is_duration_token(word) || !is_path_continuation(word) {
+            break;
+        }
+        ends.push(end + word_end);
+        if word_end != raw_end || has_file_extension(word) {
+            break;
+        }
+    }
+    ends
+}
+
+/// `name.ext` with a 1–4 char extension (optionally `:line`), like `\.\w{1,4}$`.
+pub fn has_file_extension(word: &str) -> bool {
+    let final_component = word.rsplit('/').next().unwrap_or(word);
+    let name = final_component.split(':').next().unwrap_or(final_component);
+    name.rfind('.').is_some_and(|dot| {
+        let ext = &name[dot + 1..];
+        dot > 0
+            && (1..=4).contains(&ext.len())
+            && ext.chars().all(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 fn find_in_line(line: &str, line_start: usize, spans: &mut Vec<Span>) {
     // Shell/Markdown panes often wrap destinations as `[label](path)` — extract the
     // destination before word-splitting so `docs/a.md](docs/a.md` is not one token.

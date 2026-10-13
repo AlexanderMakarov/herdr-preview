@@ -27,9 +27,7 @@ pub fn classify(raw: &str, cwd: &Path) -> Target {
         return Target::Url(raw.to_string());
     }
 
-    let path_raw = strip_file_url(raw);
-    let (path_part, line_suffix) = split_line_suffix(path_raw);
-    let decoded_path = expand_tilde(&percent_decode(path_part));
+    let (decoded_path, line_suffix) = decode_raw(raw);
     let open_spec = build_open_spec(&decoded_path, line_suffix.as_deref());
     let resolved = resolve_path(&decoded_path, cwd);
 
@@ -44,6 +42,17 @@ pub fn classify(raw: &str, cwd: &Path) -> Target {
     Target::Missing {
         display: raw.to_string(),
     }
+}
+
+/// Cheap stat-only probe (no collapsed `…` walk) for growing spaced paths.
+pub fn exists_on_disk(raw: &str, cwd: &Path) -> bool {
+    resolve_path(&decode_raw(raw.trim()).0, cwd).exists()
+}
+
+/// `file://`, `%20` and `~` decoded filesystem path plus any `:line` suffix.
+fn decode_raw(raw: &str) -> (String, Option<String>) {
+    let (path_part, line_suffix) = split_line_suffix(strip_file_url(raw));
+    (expand_tilde(&percent_decode(path_part)), line_suffix)
 }
 
 fn existing_target(resolved: PathBuf, open_spec: String) -> Target {
@@ -193,8 +202,7 @@ fn git_worktree_paths(cwd: &Path) -> Option<Vec<PathBuf>> {
 }
 
 fn open_spec_under_base(raw: &str, resolved: &Path, base: &Path) -> String {
-    let path_raw = strip_file_url(raw.trim());
-    let (_, line_suffix) = split_line_suffix(path_raw);
+    let (_, line_suffix) = decode_raw(raw.trim());
     // macOS often hands non-canonical cwd (`/var/...`) while canonicalize()
     // yields `/private/var/...`; strip_prefix must use the same form.
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
@@ -260,7 +268,9 @@ fn percent_decode(input: &str) -> String {
 
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&input[index + 1..index + 3], 16) {
+            // `get` (not indexing): `6% ↻` puts a multibyte char after the `%`.
+            let hex = input.get(index + 1..index + 3).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
                 out.push(byte);
                 index += 3;
                 continue;
@@ -471,6 +481,12 @@ mod tests {
     #[test]
     fn percent_decode_replaces_encoded_space() {
         assert_eq!(percent_decode("Tray%20status"), "Tray status");
+    }
+
+    #[test]
+    fn percent_decode_keeps_percent_before_multibyte_char() {
+        assert_eq!(percent_decode("6% ↻00:09"), "6% ↻00:09");
+        assert_eq!(percent_decode("6%↻"), "6%↻");
     }
 
     #[test]

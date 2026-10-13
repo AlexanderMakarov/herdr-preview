@@ -13,6 +13,10 @@
 - Hint scan = **visible** pane text only; Linux+macOS MVP.
 - README top stays problem-first; quicklook credit stays at bottom.
 
+## No personal data in the repo
+
+Never copy real names, usernames, home paths (`/home/<user>`), mount points or folder names from the author's machine or pasted pane text into code, comments, tests, docs, commit messages or PR text. Reproduce bugs with neutral stand-ins that keep the shape that matters (spaces, dashes, Unicode), e.g. `Project files/Jane Doe - Draft notes.md`, `/home/user/...`.
+
 ## Useful local references (on the author’s machine)
 
 - Installed file-viewer plugin tree: `~/.config/herdr/plugins/github/herdr-file-viewer-*` (esp. `docs/usage.md` OPEN / `HERDR_FILE_VIEWER_OPEN`, `docs/summoning.md`, `docs/keys.md`).
