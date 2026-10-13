@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::classify::{
-    classify, classify_with_fallbacks, discover_worktree_roots, is_worktree_dir, Target,
+    classify, classify_with_fallbacks, discover_worktree_roots, exists_on_disk, is_worktree_dir,
+    Target,
 };
 use crate::herdr_ipc::{notify, read_focused_snapshot, HerdrIpcError, PaneSnapshot};
 use crate::open::{detect_file_viewer, open_browse, open_file_viewer, open_less, open_url};
-use crate::tokenize::{find_candidates, Span};
+use crate::tokenize::{find_candidates, has_file_extension, spaced_continuation_ends, Span};
 
 /// Home-row-first keys; excludes `q` (cancel) and visually ambiguous letters per quicklook.
 pub const HINT_KEYS: &str = "asdfghjklwertyuiopzxcvbnm";
@@ -70,7 +71,7 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
     // Keep every on-screen span. Agent panes often repeat the same absolute
     // path (e.g. inside `$ ls -la …` and again as a clean follow-up line);
     // dropping duplicates by `raw` left later copies unhighlighted.
-    let spans: Vec<Span> = find_candidates(text);
+    let spans: Vec<Span> = extend_spans_on_disk(text, find_candidates(text), cwd);
 
     // Classify once per distinct raw, then reuse — shared letter for repeats.
     let mut raw_order: Vec<String> = Vec::new();
@@ -152,6 +153,30 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
     }
 
     entries
+}
+
+/// Text heuristics can't tell a spaced name like `Project files` (a real dir)
+/// from prose, so grow each slash-bearing span through the following words to
+/// the longest run that exists on disk, then drop the fragments it swallowed.
+fn extend_spans_on_disk(text: &str, spans: Vec<Span>, cwd: &Path) -> Vec<Span> {
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
+    for mut span in spans {
+        if out.last().is_some_and(|prev| span.start < prev.end) {
+            continue;
+        }
+        if span.raw.contains('/') && !span.raw.contains("://") && !has_file_extension(&span.raw) {
+            let longest = spaced_continuation_ends(text, span.end)
+                .into_iter()
+                .rev()
+                .find(|&end| exists_on_disk(&text[span.start..end], cwd));
+            if let Some(end) = longest {
+                span.end = end;
+                span.raw = text[span.start..end].to_owned();
+            }
+        }
+        out.push(span);
+    }
+    out
 }
 
 pub fn hint_key_for_index(index: usize) -> Option<char> {

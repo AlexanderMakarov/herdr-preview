@@ -275,3 +275,80 @@ fn duplicate_paths_on_same_line_keep_both_spans() {
     assert_eq!(hits[0].key, hits[1].key);
     assert!(hits[0].key.is_some());
 }
+
+/// Spaced names defeat text-only joining (`- Draft`, a slash mid-word, a bare
+/// directory name with no extension); the filesystem decides how far the path runs.
+#[test]
+fn extends_spaced_absolute_file_path_using_disk() {
+    let root = temp_fixture("spaced-file");
+    let dir = root.join("Project files");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("Jane Doe - Draft notes.md");
+    fs::write(&file, "# notes\n").unwrap();
+
+    let file_s = file.to_string_lossy();
+    let text = format!("• {file_s}\n  └ Tip: Press tab to queue a message\n");
+    let entries = build_entries(&text, &root);
+
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.key.is_some(), e.raw.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(true, file_s.as_ref())],
+    );
+    assert_eq!(&text[entries[0].start..entries[0].end], file_s.as_ref());
+}
+
+#[test]
+fn extends_spaced_absolute_dir_path_inside_status_line() {
+    let root = temp_fixture("spaced-dir");
+    let dir = root.join("Project files");
+    fs::create_dir_all(&dir).unwrap();
+
+    let dir_s = dir.to_string_lossy();
+    let text = format!("Model medium · {dir_s} · Prepare notes · Context 9% used ↻00:09\n");
+    let entries = build_entries(&text, &root);
+
+    let hit = entries
+        .iter()
+        .find(|e| e.raw == dir_s)
+        .unwrap_or_else(|| panic!("no spaced dir entry: {entries:?}"));
+    assert!(hit.key.is_some());
+    assert!(matches!(
+        hit.target,
+        herdr_preview::classify::Target::Dir { .. }
+    ));
+}
+
+#[test]
+fn extends_spaced_name_without_word_cap() {
+    let root = temp_fixture("spaced-long");
+    let dir = root.join("a");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("one two three four five six seven eight nine ten.txt");
+    fs::write(&file, "x\n").unwrap();
+
+    let file_s = file.to_string_lossy();
+    let entries = build_entries(&format!("{file_s}\n"), &root);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].raw, file_s);
+}
+
+#[test]
+fn spaced_run_stops_after_extension_word() {
+    let root = temp_fixture("spaced-stop-ext");
+    let dir = root.join("x");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("my notes v2.md"), "x\n").unwrap();
+    // Exists too, but the run must end at the first `.ext` word.
+    fs::write(dir.join("my notes v2.md trailing.md"), "x\n").unwrap();
+
+    let base_s = dir.join("my").to_string_lossy().into_owned();
+    let entries = build_entries(&format!("{base_s} notes v2.md trailing.md\n"), &root);
+    assert_eq!(
+        entries[0].raw,
+        format!("{base_s} notes v2.md"),
+        "{entries:?}"
+    );
+}
