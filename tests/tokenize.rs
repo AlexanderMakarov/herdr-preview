@@ -19,6 +19,76 @@ fn finds_absolute_path() {
 }
 
 #[test]
+fn finds_absolute_path_embedded_in_json_one_liner() {
+    let line = r#"{"stdout":"___\n/home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu\noff"}"#;
+    let spans = find_candidates(line);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.raw == "/home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu"),
+        "expected embedded rustup toolchain path, got {:?}",
+        spans.iter().map(|s| &s.raw).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn json_heuristic_line_still_finds_relative_path() {
+    let line = r#"ess":true, edit src/app.rs, "stdout":"/home/user/out.log""#;
+    let spans = find_candidates(line);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(
+        raws.contains(&"src/app.rs"),
+        "relative paths must survive json-heuristic lines, got {raws:?}"
+    );
+    assert!(
+        raws.contains(&"/home/user/out.log"),
+        "embedded absolutes must still be found, got {raws:?}"
+    );
+}
+
+#[test]
+fn terminal_wrapped_json_fragment_uses_embedded_paths_not_word_blob() {
+    let line = r#"ess":true,"status":"","code":0,"stdout":"___\nlib___.rlib\n/home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu\noff"#;
+    let spans = find_candidates(line);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(
+        raws.contains(&"/home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu"),
+        "expected rustup path, got {raws:?}"
+    );
+    assert!(
+        !raws.iter().any(|r| r.contains("ess\":true")),
+        "must not treat wrapped json as one word span, got {raws:?}"
+    );
+    assert!(!raws.iter().any(|r| r.starts_with("/lib___.")));
+}
+
+#[test]
+fn splits_path_list_on_colon() {
+    let line = "PATH=/usr/bin:/usr/etc";
+    let spans = find_candidates(line);
+    let raws: Vec<_> = spans.iter().map(|s| s.raw.as_str()).collect();
+    assert!(raws.contains(&"/usr/bin"));
+    assert!(raws.contains(&"/usr/etc"));
+}
+
+#[test]
+fn keeps_file_line_suffix_as_one_token() {
+    let spans = find_candidates("open src/app.rs:42 now");
+    assert!(spans.iter().any(|s| s.raw == "src/app.rs:42"));
+    assert!(!spans.iter().any(|s| s.raw == "src/app.rs"));
+}
+
+#[test]
+fn finds_directory_path_inside_bash_shell_invitation() {
+    let line = "user@host:~/code/scripts$";
+    let spans = find_candidates(line);
+
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].raw, "~/code/scripts");
+    assert_eq!(&line[spans[0].start..spans[0].end], "~/code/scripts");
+}
+
+#[test]
 fn keeps_clearly_path_shaped_spaces_in_one_candidate() {
     let text = "open …/Tray status icon-….plan.md next";
     let spans = find_candidates(text);

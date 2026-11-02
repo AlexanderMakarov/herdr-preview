@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Platforms MVP: Linux + macOS only.
-- Scan source: focused pane **visible** text only (not full scrollback).
+- Scan source: focused pane **recent** tail (same bounded read as hint action), not full scrollback.
 - Never add `[[link_handlers]]` or git-host / `gh pr view` Ctrl+click hijacks.
 - Prefer herdr-file-viewer for **file** opens; fallback `less` overlay with reduced functionality (documented in README).
 - Directory picks always open the browse overlay (with or without FV). Do **not** summon FV on a directory. Do **not** DirSkip.
@@ -734,6 +734,6 @@ Implement directory browse overlay from the approved plan in this repo.
 
 1. Read AGENTS.md, docs/superpowers/specs/2026-08-12-directory-browse-design.md, and docs/superpowers/plans/2026-08-15-directory-browse.md.
 2. Use superpowers:subagent-driven-development (or executing-plans) on that plan.
-3. Respect Global Constraints: no [[link_handlers]], directory pick → browse overlay (not FV dir OPEN, not DirSkip), file opens still FV preferred / less fallback, visible-scan only, Linux+macOS.
+3. Respect Global Constraints: no [[link_handlers]], directory pick → browse overlay (not FV dir OPEN, not DirSkip), file opens still FV preferred / less fallback, bounded recent-tail scan, Linux+macOS.
 4. Do not expand scope into search, icons, hide-dot, or large-Markdown performance.
 ```

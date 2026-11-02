@@ -7,8 +7,12 @@
 //! 2. Resolve cwd from a live `herdr pane get <id>` preferring
 //!    `.foreground_cwd` then `.cwd` (important for raw shell panes). Fall back
 //!    to context `.focused_pane_cwd` / `.workspace_cwd` or pane-current cwd.
-//! 3. Visible text only (MVP — never full scrollback / recent):
-//!    `herdr pane read <PANE_ID> --source visible --format text`
+//! 3. Hint snapshot: tail of pane output via `herdr pane read --source recent
+//!    --lines N` (not full scrollback). `N` defaults to 200, clamped 50–1000
+//!    (`HERDR_PREVIEW_HINT_LINES`). Herdr appears to cap `--lines` around 1000.
+//!    Overlay still bottom-aligns and paints only the terminal height; extra
+//!    lines help tokenize paths that scrolled off the viewport but remain in
+//!    the recent tail (e.g. shell invitation one row above the status band).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -63,7 +67,8 @@ pub fn read_focused_snapshot() -> Result<PaneSnapshot, HerdrIpcError> {
 
 fn read_focused_snapshot_with_bin(herdr_bin: &Path) -> Result<PaneSnapshot, HerdrIpcError> {
     let (pane_id, cwd) = focused_pane_meta(herdr_bin)?;
-    let visible_text = fetch_visible_text(herdr_bin, &pane_id)?;
+    let lines = hint_snapshot_lines();
+    let visible_text = fetch_recent_text(herdr_bin, &pane_id, lines)?;
     Ok(PaneSnapshot {
         cwd,
         visible_text,
@@ -170,10 +175,32 @@ fn fetch_pane_cwd(herdr_bin: &Path, pane_id: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn fetch_visible_text(herdr_bin: &Path, pane_id: &str) -> Result<String, HerdrIpcError> {
+/// How many trailing lines to pull for hint tokenization (`recent` source).
+pub fn hint_snapshot_lines() -> usize {
+    std::env::var("HERDR_PREVIEW_HINT_LINES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(50, 1000)
+}
+
+fn fetch_recent_text(
+    herdr_bin: &Path,
+    pane_id: &str,
+    lines: usize,
+) -> Result<String, HerdrIpcError> {
+    let lines = lines.to_string();
     let output = Command::new(herdr_bin)
         .args([
-            "pane", "read", pane_id, "--source", "visible", "--format", "text",
+            "pane",
+            "read",
+            pane_id,
+            "--source",
+            "recent",
+            "--lines",
+            &lines,
+            "--format",
+            "text",
         ])
         .output()
         .map_err(|err| {
@@ -216,6 +243,25 @@ pub fn notify(title: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn hint_snapshot_lines_defaults_and_clamps() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let old = std::env::var_os("HERDR_PREVIEW_HINT_LINES");
+        std::env::remove_var("HERDR_PREVIEW_HINT_LINES");
+        assert_eq!(hint_snapshot_lines(), 200);
+        std::env::set_var("HERDR_PREVIEW_HINT_LINES", "9999");
+        assert_eq!(hint_snapshot_lines(), 1000);
+        std::env::set_var("HERDR_PREVIEW_HINT_LINES", "10");
+        assert_eq!(hint_snapshot_lines(), 50);
+        match old {
+            Some(value) => std::env::set_var("HERDR_PREVIEW_HINT_LINES", value),
+            None => std::env::remove_var("HERDR_PREVIEW_HINT_LINES"),
+        }
+    }
 
     #[test]
     fn parse_plugin_context_prefers_focused_pane_fields() {

@@ -9,7 +9,7 @@ Opening a path (often Markdown) that an agent printed in a Herdr pane — plans,
 
 ## Goals (MVP)
 
-- Hint overlay on the focused pane’s **visible** text (`prefix+v` or equivalent).
+- Preview overlay (path pick UI) on the focused pane’s **recent tail** (`prefix+v` or equivalent): `herdr pane read --source recent --lines N` with default `N=200`, clamp 50–1000 (`HERDR_PREVIEW_HINT_LINES`). Not full scrollback (Herdr caps `--lines` around 1000; scroll metadata can be much larger).
 - Path pick → open content with line/range when available.
 - Prefer **herdr-file-viewer** when installed (`HERDR_FILE_VIEWER_OPEN` / equivalent summon).
 - If file-viewer is missing → **`less`** in an overlay/popup above the current pane (reduced functionality; documented in README).
@@ -23,7 +23,7 @@ Opening a path (often Markdown) that an agent printed in a Herdr pane — plans,
 - Own full file-browser / tree UI (a thin directory browse overlay is specified in `docs/superpowers/specs/2026-08-12-directory-browse-design.md`).
 - Image or media rendering.
 - Ctrl-hold underline or OSC-8 linkify inside scrollback.
-- Full-scrollback scan (visible only).
+- Full-scrollback scan (bounded recent tail only; in-overlay scroll covers the rest of that tail).
 - Tuning or documenting file-viewer `preview_max_*` as part of this product.
 - Large-Markdown open performance — **open investigation** (may be glow cost vs caps); not specified here until profiled.
 - Escalation hotkeys to `$EDITOR` / “open in file-viewer” from the less fallback (can revisit later).
@@ -33,9 +33,9 @@ Opening a path (often Markdown) that an agent printed in a Herdr pane — plans,
 ```
 prefix+v
     → herdr-preview hint action
-        → read focused pane visible text + cwd (Herdr IPC)
+        → read focused pane recent tail + cwd (Herdr IPC)
         → Rust tokenize / classify / resolve
-        → hint overlay (letter targets)
+        → preview overlay (letter targets)
             → path → open_preview(path[:line…])
             → http(s) → open browser
             → else → toast / no-op
@@ -55,15 +55,18 @@ open_preview:
 ## UX
 
 1. User focuses a shell/agent pane and presses the bound key.
-2. Overlay shows letter (or short) targets on path-like and URL spans in the **visible** snapshot.
-3. Choosing a filesystem target:
+2. Overlay bottom-aligns the snapshot tail by default (horizontal rule row 1 only; Herdr owns side/bottom chrome). The hint action reads up to N **recent** lines (default 200); the overlay **scrolls** through that full tail (↑/↓ and mouse wheel) while only ~viewport rows are visible at once. Row H is the yellow status band (line range + scroll hint). One snapshot line → one display row, truncate after painting hints. Origin-pane scroll + re-preview still finds paths beyond N unless `HERDR_PREVIEW_HINT_LINES` is raised.
+3. Tokenization is staged (not one monolithic regex): line/word scan, then shell-invitation path extraction (`user@host:~/dir$`), then colon-separated path lists (`/usr/bin:/usr/sbin`, `PATH=…`), then single-path spans — so `file.rs:42`, URLs, and `@host:…` stay unambiguous.
+4. Choosing a filesystem target:
    - Resolves relative segments against `focused_pane_cwd`.
    - Handles spaced paths and `%20` (known quicklook footgun).
    - Passes `path`, `path:N`, or `path:A-B` through to file-viewer OPEN when using FV (same shapes FV documents; no separate column hop).
    - Directories: open the herdr-preview browse overlay (see 2026-08-12 directory-browse spec); file chosen there uses FV or `less`.
-4. Choosing `http(s)`: system browser only.
-5. File-viewer path: focus lands in Files; `q` / `Esc` quits the viewer process and tears down the split/tab (same as normal FV summon). Note: `q` exits the whole Files app, not a stacked “preview layer.”
-6. `less` fallback: overlay above the existing app; fewer features (no glow/bat/git/tree); document clearly in README.
+5. Choosing `http(s)`: system browser only.
+6. File-viewer path: focus lands in Files; `q` / `Esc` quits the viewer process and tears down the split/tab (same as normal FV summon). Note: `q` exits the whole Files app, not a stacked “preview layer.”
+7. `less` fallback: overlay above the existing app; fewer features (no glow/bat/git/tree); document clearly in README.
+
+**Naming:** the product/repo is **herdr-preview**; the Herdr action/pane ids retain **hint** from the quicklook-style pick flow (`hint`, `hint-overlay`, `HERDR_PREVIEW_HINT_*` env vars). User-facing overlay title starts with **Preview** (scroll hint in title); status band repeats **Preview** for the yellow legend line.
 
 Placement for hints and for `less`: overlay/popup above the current application is acceptable; FV uses its normal split/tab summon. Either placement is fine as long as focus and `q` behavior stay predictable.
 
@@ -77,7 +80,7 @@ Placement for hints and for `less`: overlay/popup above the current application 
 | Missing path after resolve | Hinted in red with no letter (not openable). |
 | Collapsed `...` / `…` (leading and/or internal component gap; some remainder contains `/`) | Walk cwd then git/Claude worktree fallbacks; skip `.git` / `node_modules` / `target` / `worktrees`. Unique hit: green + letter. Multiple hits: one letter, lexicographic/first-fallback file, yellow. No hit: red, no letter. |
 
-Tokenization must not truncate on the first whitespace inside a path; decode `%20` for filesystem candidates. `NAME=/path` env assignments contribute only the path after `=`. Tokens like `4.4s` / `2.03s` are command durations, not filename continuations.
+Tokenization must not truncate on the first whitespace inside a path; decode `%20` for filesystem candidates. `NAME=/path` env assignments contribute only the path after `=`. Colon-separated lists where each segment is path-shaped (`/usr/bin:/usr/etc`) yield one hint per segment; a single `:line` / `:start-end` suffix on a file stays one token. Shell invitation lines contribute the directory segment after `user@host:`. Tokens like `4.4s` / `2.03s` are command durations, not filename continuations.
 
 File-viewer OPEN paths must live under the viewer’s tree root (usually the repo/worktree of the summon cwd). Out-of-root absolute paths may fail; surface FV’s failure rather than silently rewriting.
 
@@ -157,7 +160,7 @@ Context notes from the session are in italics. Multiple-choice option labels are
 
 ### Q: Architecture approaches?
 
-**Selected:** `a-rust-core` — Pure Rust plugin — scan visible pane in-process, hint overlay via Herdr, preview pane renders text/images itself; never registers `[[link_handlers]]` / git-host-token
+**Selected:** `a-rust-core` — Pure Rust plugin — scan bounded recent pane tail in-process, hint overlay via Herdr, preview pane renders text/images itself; never registers `[[link_handlers]]` / git-host-token
 
 *Later superseded for rendering: companion to file-viewer (+ `less` fallback), not an own preview renderer. Rust-in-process scan + no link_handlers retained.*
 
