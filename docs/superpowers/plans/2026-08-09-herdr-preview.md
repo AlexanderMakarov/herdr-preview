@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship a Rust Herdr plugin that shows a hint overlay on visible pane text and opens picked paths in herdr-file-viewer (or `less` overlay if FV is missing), while sending http(s) to the system browser and never registering link handlers.
+**Goal:** Ship a Rust Herdr plugin that shows a hint overlay on a bounded recent pane tail and opens picked paths in herdr-file-viewer (or `less` overlay if FV is missing), while sending http(s) to the system browser and never registering link handlers.
 
 **Architecture:** One plugin crate: tokenize/classify/resolve in Rust; hint overlay via Herdr popup/overlay pane; `open_preview` prefers FV `HERDR_FILE_VIEWER_OPEN` summon, else spawns `less` in an overlay. No `[[link_handlers]]` in the manifest.
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Platforms MVP: Linux + macOS only.
-- Scan source: focused pane **visible** text only (not full scrollback).
+- Scan source: focused pane **recent** tail (`--source recent --lines N`, default 200, max 1000), not full scrollback.
 - Never add `[[link_handlers]]` or git-host / `gh pr view` Ctrl+click hijacks.
 - Prefer herdr-file-viewer; fallback `less` overlay with reduced functionality (documented in README).
 - Path open shapes for FV: `path`, `path:N`, `path:A-B` only.
@@ -209,6 +209,6 @@ Implement herdr-preview from the approved plan in this repo.
 
 1. Read AGENTS.md and docs/superpowers/specs/2026-08-09-herdr-preview-design.md (including Brainstorm Q&A).
 2. Use superpowers:subagent-driven-development (or executing-plans) on docs/superpowers/plans/2026-08-09-herdr-preview.md.
-3. Respect Global Constraints: no [[link_handlers]], FV preferred / less fallback, visible-scan only, Linux+macOS.
+3. Respect Global Constraints: no [[link_handlers]], FV preferred / less fallback, bounded recent-tail scan, Linux+macOS.
 4. Do not expand scope into large-Markdown performance policy without a new design decision.
 ```

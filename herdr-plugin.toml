@@ -1,12 +1,12 @@
 # herdr-plugin.toml — manifest for herdr-preview.
 #
-# Hint overlay on visible pane file paths; opens picks in herdr-file-viewer when
+# Preview overlay (hint action) on pane path picks; opens in herdr-file-viewer when
 # installed, otherwise `less` in an overlay.
 
 id = "herdr-preview"
 name = "herdr-preview"
 version = "0.1.0"
-description = "Hint-pick file paths from visible pane text; preview via file-viewer or less."
+description = "Hint-pick file paths from the focused pane recent tail; preview via file-viewer or less."
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 
@@ -15,7 +15,7 @@ command = ["cargo", "build", "--release"]
 
 [[panes]]
 id = "hint-overlay"
-title = "Hint"
+title = "Preview · scroll origin pane for more"
 placement = "overlay"
 command = ["./target/release/herdr-preview", "hint-overlay"]
 
@@ -35,5 +35,5 @@ command = ["./target/release/herdr-preview", "browse"]
 id = "hint"
 platforms = ["linux", "macos"]
 title = "Hint-pick openable file paths on screen"
-description = "Overlay letter hints on file paths in the visible pane; press a key to open."
+description = "Overlay letter hints on paths in the recent tail; scroll and press a key to open."
 command = ["bash", "scripts/run-hint.sh"]

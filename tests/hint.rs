@@ -50,6 +50,15 @@ fn manifest_declares_hint_action_and_panes() {
 }
 
 #[test]
+fn overlay_pane_title_mentions_scroll_in_origin_pane() {
+    let manifest = fs::read_to_string("herdr-plugin.toml").expect("read manifest");
+    assert!(
+        manifest.contains("scroll origin pane"),
+        "scroll hint belongs in overlay pane title, not status band"
+    );
+}
+
+#[test]
 fn hint_keys_are_unique_and_exclude_cancel() {
     assert_eq!(HINT_KEYS.len(), 25);
     assert!(!HINT_KEYS.contains('q'));
@@ -351,4 +360,24 @@ fn spaced_run_stops_after_extension_word() {
         format!("{base_s} notes v2.md"),
         "{entries:?}"
     );
+}
+
+#[test]
+fn shell_invitation_path_is_openable_directory_hint() {
+    let root = temp_fixture("shell-invitation");
+    let cwd = root.join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cwd_s = cwd.to_string_lossy();
+    let text = format!("user@host:{cwd_s}$\n");
+    let entries = build_entries(&text, &cwd);
+    let hit = entries
+        .iter()
+        .find(|e| e.raw == cwd_s.as_ref())
+        .unwrap_or_else(|| panic!("expected cwd path hint, got {entries:?}"));
+    assert!(hit.key.is_some());
+    assert!(matches!(
+        hit.target,
+        herdr_preview::classify::Target::Dir { .. }
+    ));
 }

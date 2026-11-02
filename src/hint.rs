@@ -114,9 +114,46 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
         target_by_raw.push((raw, target));
     }
 
+    // Letters are scarce — assign from the newest snapshot lines downward so the
+    // default bottom-aligned overlay puts `a` on fresh output, not scrollback top.
+    let mut newest_pos_by_raw: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    for span in &spans {
+        let line = line_index_at(text, span.start);
+        newest_pos_by_raw
+            .entry(span.raw.clone())
+            .and_modify(|(best_line, best_start)| {
+                if line > *best_line || (line == *best_line && span.start > *best_start) {
+                    *best_line = line;
+                    *best_start = span.start;
+                }
+            })
+            .or_insert((line, span.start));
+    }
+
+    let mut key_assign_order: Vec<usize> = (0..target_by_raw.len()).collect();
+    key_assign_order.sort_by(|&i, &j| {
+        let (raw_i, _) = &target_by_raw[i];
+        let (raw_j, _) = &target_by_raw[j];
+        let pos_i = newest_pos_by_raw
+            .get(raw_i)
+            .copied()
+            .unwrap_or((0, 0));
+        let pos_j = newest_pos_by_raw
+            .get(raw_j)
+            .copied()
+            .unwrap_or((0, 0));
+        pos_j
+            .0
+            .cmp(&pos_i.0)
+            .then_with(|| pos_j.1.cmp(&pos_i.1))
+            .then_with(|| raw_i.cmp(raw_j))
+    });
+
     let mut key_by_raw: Vec<(String, Option<char>)> = Vec::new();
     let mut key_index = 0usize;
-    for (raw, target) in &target_by_raw {
+    for idx in key_assign_order {
+        let (raw, target) = &target_by_raw[idx];
         // Overlay shows files, dirs, and missing path-like tokens (red). http(s) stays Ctrl+click.
         if matches!(target, Target::Url(_)) {
             continue;
@@ -158,6 +195,13 @@ pub fn build_entries(text: &str, cwd: &Path) -> Vec<HintEntry> {
 /// Text heuristics can't tell a spaced name like `Project files` (a real dir)
 /// from prose, so grow each slash-bearing span through the following words to
 /// the longest run that exists on disk, then drop the fragments it swallowed.
+/// 0-based line index in `text` for a byte offset (before the newline ending that line).
+fn line_index_at(text: &str, byte_offset: usize) -> usize {
+    text.get(..byte_offset.min(text.len()))
+        .map(|prefix| prefix.bytes().filter(|&b| b == b'\n').count())
+        .unwrap_or(0)
+}
+
 fn extend_spans_on_disk(text: &str, spans: Vec<Span>, cwd: &Path) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
     for mut span in spans {
@@ -424,16 +468,37 @@ fn overlay_pick(entries: &[HintEntry], snapshot: &str) -> Result<OverlayChoice, 
     let mut tty = open_tty()?;
     let _raw = RawMode::enter(tty.as_raw_fd())?;
     let _term = TerminalGuard::enter(&mut stdout)?;
-    let (rows, cols) = tty_size(tty.as_raw_fd()).unwrap_or((24, 80));
-    write!(stdout, "{ANSI_HOME}{ANSI_CLEAR}")?;
-    render_overlay(&mut stdout, entries, snapshot, rows, cols)?;
-    stdout.flush()?;
+    let mut scroll_up = 0usize;
+    let mut leftover = Vec::new();
 
     loop {
-        match read_key(&mut tty)? {
-            KeyPress::Cancel => return Ok(OverlayChoice::Cancel),
-            KeyPress::Ignore => continue,
-            KeyPress::Byte(key) => {
+        let (rows, cols) = tty_size(tty.as_raw_fd()).unwrap_or((24, 80));
+        render_overlay(
+            &mut stdout,
+            entries,
+            snapshot,
+            rows,
+            cols,
+            scroll_up,
+        )?;
+        stdout.flush()?;
+
+        let Some(key) = read_hint_key(&mut tty, &mut leftover)? else {
+            continue;
+        };
+        let layout = overlay_layout(rows as usize);
+        let total = trim_trailing_empty_lines_for_count(snapshot);
+        let max_scroll = max_snapshot_scroll_up(total, layout.content_slots);
+
+        match key {
+            HintKey::Cancel => return Ok(OverlayChoice::Cancel),
+            HintKey::ScrollUp { lines } => {
+                scroll_up = (scroll_up + lines).min(max_scroll);
+            }
+            HintKey::ScrollDown { lines } => {
+                scroll_up = scroll_up.saturating_sub(lines);
+            }
+            HintKey::Byte(key) => {
                 if matches!(key, b'q' | b'Q') {
                     return Ok(OverlayChoice::Cancel);
                 }
@@ -455,6 +520,8 @@ const ANSI_HIDE: &str = "\x1b[?25l";
 const ANSI_SHOW: &str = "\x1b[?25h";
 const ANSI_WRAP_OFF: &str = "\x1b[?7l";
 const ANSI_WRAP_ON: &str = "\x1b[?7h";
+const ANSI_MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const ANSI_MOUSE_OFF: &str = "\x1b[?1000l\x1b[?1006l";
 const ANSI_CLR_EOL: &str = "\x1b[K";
 
 /// RAII: restore cursor + wrap when the overlay exits for any reason.
@@ -462,7 +529,7 @@ struct TerminalGuard;
 
 impl TerminalGuard {
     fn enter(out: &mut impl Write) -> io::Result<Self> {
-        write!(out, "{ANSI_HIDE}{ANSI_WRAP_OFF}")?;
+        write!(out, "{ANSI_HIDE}{ANSI_WRAP_OFF}{ANSI_MOUSE_ON}")?;
         out.flush()?;
         Ok(Self)
     }
@@ -471,7 +538,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        let _ = write!(stdout, "{ANSI_SHOW}{ANSI_WRAP_ON}");
+        let _ = write!(stdout, "{ANSI_MOUSE_OFF}{ANSI_SHOW}{ANSI_WRAP_ON}");
         let _ = stdout.flush();
     }
 }
@@ -514,10 +581,203 @@ impl Drop for RawMode {
     }
 }
 
-enum KeyPress {
+enum HintKey {
     Byte(u8),
     Cancel,
-    Ignore,
+    ScrollUp { lines: usize },
+    ScrollDown { lines: usize },
+}
+
+/// Line window into the snapshot tail: `scroll_up` 0 = bottom-aligned; larger = older lines.
+fn snapshot_line_window(total: usize, slots: usize, scroll_up: usize) -> (usize, usize) {
+    let max_up = max_snapshot_scroll_up(total, slots);
+    let scroll_up = scroll_up.min(max_up);
+    let end = total.saturating_sub(scroll_up);
+    let start = end.saturating_sub(slots);
+    (start, end)
+}
+
+fn max_snapshot_scroll_up(total: usize, slots: usize) -> usize {
+    total.saturating_sub(slots)
+}
+
+fn trim_trailing_empty_lines_for_count(snapshot: &str) -> usize {
+    let mut lines = split_snapshot_lines(snapshot);
+    trim_trailing_empty_lines(&mut lines);
+    lines.len()
+}
+
+/// Herdr overlay panes draw left/right border columns (no manifest flag to disable).
+/// We paint at the same column indices as the origin pane snapshot (`stty` cols);
+/// the frame clips ~[`OVERLAY_PANE_BORDER_COLS`] cells on the right. Do not reflow
+/// lines to inner width — that would diverge from pure-shell tab line breaks.
+#[allow(dead_code)]
+const OVERLAY_PANE_BORDER_COLS: usize = 2;
+
+fn overlay_paint_cols(cols: u16) -> usize {
+    cols.max(20) as usize
+}
+
+/// 1-indexed terminal rows for overlay height (see `overlay_layout`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayLayout {
+    top_border: usize,
+    content_top: usize,
+    content_bottom: usize,
+    content_slots: usize,
+    status_row: usize,
+}
+
+/// Map `stty` height to rows we paint. Herdr's overlay pane draws its own bottom
+/// edge; we do not paint a bottom rule (that extra `CUP` row looked like a blank
+/// band above the yellow status). Title/chrome may consume the top row — leave
+/// one row at the bottom undrawn so status + content stay adjacent.
+fn overlay_layout(stty_rows: usize) -> OverlayLayout {
+    let h = stty_rows.max(5).saturating_sub(1);
+    OverlayLayout {
+        top_border: 1,
+        content_top: 2,
+        content_bottom: h.saturating_sub(1),
+        content_slots: h.saturating_sub(2).max(1),
+        status_row: h,
+    }
+}
+
+fn horizontal_rule(cols: usize) -> String {
+    let n = cols.min(512);
+    "─".repeat(n)
+}
+
+fn write_terminal_row(out: &mut impl Write, row: usize, text: &str) -> io::Result<()> {
+    write!(out, "\x1b[{row};1H{text}{ANSI_CLR_EOL}")?;
+    Ok(())
+}
+
+/// Soft-wrap for display: CSI sequences pass through and do not consume width.
+#[allow(dead_code)]
+fn wrap_line_preserve_ansi(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut cells = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            current.push(ch);
+            if chars.peek() == Some(&'[') {
+                current.push(chars.next().unwrap());
+                for c in chars.by_ref() {
+                    current.push(c);
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if cells >= cols {
+            rows.push(current);
+            current = String::new();
+            cells = 0;
+        }
+        current.push(ch);
+        cells += 1;
+    }
+    rows.push(current);
+    rows
+}
+
+fn paint_logical_line(
+    line: &mut String,
+    line_origin: usize,
+    entries_here: &[&HintEntry],
+    h_key: &str,
+    h_tok: &str,
+    h_key_warn: &str,
+    h_tok_warn: &str,
+    h_key_miss: &str,
+    h_tok_miss: &str,
+    reset: &str,
+    dim: &str,
+) {
+    let mut ordered = entries_here.to_vec();
+    ordered.sort_by_key(|e| std::cmp::Reverse(e.start));
+    for entry in ordered {
+        let rel = entry.start.saturating_sub(line_origin);
+        if rel + entry.raw.len() <= line.len() && line[rel..].starts_with(&entry.raw) {
+            paint_token_at(
+                line,
+                rel,
+                entry,
+                h_key,
+                h_tok,
+                h_key_warn,
+                h_tok_warn,
+                h_key_miss,
+                h_tok_miss,
+                reset,
+                dim,
+            );
+        }
+    }
+}
+
+/// Bottom-aligned display rows: one snapshot line per row, truncate (no reflow).
+fn build_logical_display_rows(
+    snap_lines: &[String],
+    line_starts: &[usize],
+    entries: &[HintEntry],
+    content_slots: usize,
+    scroll_up: usize,
+    cols: usize,
+    h_key: &str,
+    h_tok: &str,
+    h_key_warn: &str,
+    h_tok_warn: &str,
+    h_key_miss: &str,
+    h_tok_miss: &str,
+    reset: &str,
+    dim: &str,
+) -> Vec<String> {
+    let total = snap_lines.len();
+    let mut by_abs: Vec<Vec<&HintEntry>> = vec![Vec::new(); total];
+    for entry in entries {
+        let Some(abs) = line_starts
+            .windows(2)
+            .position(|w| entry.start >= w[0] && entry.start < w[1])
+        else {
+            continue;
+        };
+        by_abs[abs].push(entry);
+    }
+
+    let (start, end) = snapshot_line_window(total, content_slots, scroll_up);
+    let mut display: Vec<String> = Vec::with_capacity(content_slots);
+    for abs in start..end {
+        let mut line = snap_lines[abs].clone();
+        let origin = line_starts.get(abs).copied().unwrap_or(0);
+        paint_logical_line(
+            &mut line,
+            origin,
+            &by_abs[abs],
+            h_key,
+            h_tok,
+            h_key_warn,
+            h_tok_warn,
+            h_key_miss,
+            h_tok_miss,
+            reset,
+            dim,
+        );
+        display.push(truncate_cells(&line, cols));
+    }
+    while display.len() < content_slots {
+        display.insert(0, String::new());
+    }
+    display
 }
 
 fn render_overlay(
@@ -526,13 +786,8 @@ fn render_overlay(
     snapshot: &str,
     rows: u16,
     cols: u16,
+    scroll_up: usize,
 ) -> io::Result<()> {
-    // Match quicklook hint-pane geometry:
-    // - Prefer bottom-align when the snap is shorter than the overlay (origin panes
-    //   often report viewport_rows = N but visible text has N-1 lines; top-align
-    //   floats content one row high).
-    // - When the snap is taller, keep the bottom rows (border/resize mismatch).
-    // - Legend overwrites the last physical row (no extra newline that scrolls).
     const DIM: &str = "\x1b[2;90m";
     const RESET: &str = "\x1b[0m";
     const H_KEY: &str = "\x1b[0;1;30;48;2;80;200;80m";
@@ -542,18 +797,13 @@ fn render_overlay(
     const H_KEY_MISS: &str = "\x1b[0;1;37;48;2;200;60;60m";
     const H_TOK_MISS: &str = "\x1b[0;38;2;220;80;80m";
 
-    let rows = rows.max(2) as usize;
-    let cols = cols.max(20) as usize;
+    let layout = overlay_layout(rows as usize);
+    let cols = overlay_paint_cols(cols);
 
-    // Preserve empty lines the way bash `while read` does (not str::lines(),
-    // which drops a final empty after a trailing newline equally in both, but
-    // keep middle blanks explicitly).
-    let snap_lines = split_snapshot_lines(snapshot);
+    let mut snap_lines = split_snapshot_lines(snapshot);
+    trim_trailing_empty_lines(&mut snap_lines);
     let total = snap_lines.len();
-    let offset = total.saturating_sub(rows);
-    let visible = total - offset;
-    let pad = rows.saturating_sub(visible);
-
+    let tail_lines = total;
     let mut line_starts = Vec::with_capacity(total + 1);
     let mut cursor = 0usize;
     for line in &snap_lines {
@@ -565,77 +815,69 @@ fn render_overlay(
     }
     line_starts.push(cursor);
 
-    let mut body_lines: Vec<String> = Vec::with_capacity(rows);
-    for _ in 0..pad {
-        body_lines.push(String::new());
-    }
-    for line in snap_lines.iter().skip(offset) {
-        body_lines.push(line.clone());
-    }
-    debug_assert_eq!(body_lines.len(), rows);
+    let (win_start, win_end) =
+        snapshot_line_window(total, layout.content_slots, scroll_up);
+    let display_rows = build_logical_display_rows(
+        &snap_lines,
+        &line_starts,
+        entries,
+        layout.content_slots,
+        scroll_up,
+        cols,
+        H_KEY,
+        H_TOK,
+        H_KEY_WARN,
+        H_TOK_WARN,
+        H_KEY_MISS,
+        H_TOK_MISS,
+        RESET,
+        DIM,
+    );
 
-    let mut by_line: Vec<Vec<&HintEntry>> = vec![Vec::new(); rows];
-    for entry in entries {
-        let Some(abs) = line_starts
-            .windows(2)
-            .position(|w| entry.start >= w[0] && entry.start < w[1])
-        else {
-            continue;
-        };
-        if abs < offset {
-            continue;
-        }
-        let painted = pad + (abs - offset);
-        if painted < rows {
-            by_line[painted].push(entry);
-        }
-    }
-
-    for (row, entries_here) in by_line.iter().enumerate() {
-        if entries_here.is_empty() {
-            continue;
-        }
-        let line = &mut body_lines[row];
-        let abs_line = offset + row.saturating_sub(pad);
-        let line_origin = line_starts.get(abs_line).copied().unwrap_or(0);
-        let mut ordered = entries_here.clone();
-        // Right-to-left so earlier byte offsets stay valid after replace_range.
-        ordered.sort_by_key(|e| std::cmp::Reverse(e.start));
-        for entry in ordered {
-            let rel = entry.start.saturating_sub(line_origin);
-            if rel + entry.raw.len() > line.len() || !line[rel..].starts_with(&entry.raw) {
-                // Fallback if snapshot line boundaries drifted; still better than nothing.
-                if let Some(found) = line.find(&entry.raw) {
-                    paint_token_at(line, found, entry, H_KEY, H_TOK, H_KEY_WARN, H_TOK_WARN, H_KEY_MISS, H_TOK_MISS, RESET, DIM);
-                }
-                continue;
-            }
-            paint_token_at(line, rel, entry, H_KEY, H_TOK, H_KEY_WARN, H_TOK_WARN, H_KEY_MISS, H_TOK_MISS, RESET, DIM);
-        }
-    }
-
-    // Paint rows-1 body lines with writeln, then legend without a trailing
-    // newline (a final newline alone scrolls a full-height frame up by one).
-    write!(out, "{ANSI_HOME}")?;
-    for line in body_lines.iter().take(rows.saturating_sub(1)) {
-        let truncated = truncate_cells(line, cols);
-        writeln!(out, "{DIM}{truncated}{RESET}{ANSI_CLR_EOL}")?;
-    }
     let distinct = {
         let mut raws: Vec<&str> = entries.iter().map(|e| e.raw.as_str()).collect();
         raws.sort_unstable();
         raws.dedup();
         raws.len()
     };
-    let legend = format!(
-        " hint · {distinct} path(s) · letter opens · q/Esc cancel"
+    let _shown = win_end.saturating_sub(win_start);
+    let scroll_note = if scroll_up > 0 {
+        format!(" · ↑{scroll_up}")
+    } else {
+        String::new()
+    };
+    let line_from = win_start + 1;
+    let status = format!(
+        " Preview · {distinct} path(s) · L{line_from}-{win_end}/{tail_lines}{scroll_note} · ↑↓ scroll · letter · q/Esc"
     );
-    let legend = truncate_cells(&legend, cols);
-    write!(
+    let status = truncate_cells(&status, cols);
+    let rule = horizontal_rule(cols);
+
+    write!(out, "{ANSI_HOME}{ANSI_CLEAR}")?;
+    write_terminal_row(
         out,
-        "\x1b[1;30;48;2;255;253;1m{legend}{RESET}{ANSI_CLR_EOL}"
+        layout.top_border,
+        &format!("{DIM}{rule}{RESET}"),
+    )?;
+    for (index, line) in display_rows.iter().enumerate() {
+        let row = layout.content_top + index;
+        if row > layout.content_bottom {
+            break;
+        }
+        write_terminal_row(out, row, &format!("{DIM}{line}{RESET}"))?;
+    }
+    write_terminal_row(
+        out,
+        layout.status_row,
+        &format!("\x1b[1;30;48;2;255;253;1m{status}{RESET}"),
     )?;
     Ok(())
+}
+
+fn trim_trailing_empty_lines(lines: &mut Vec<String>) {
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
 }
 
 /// Split snapshot text into lines, keeping middle empty rows (bash `read` style).
@@ -729,31 +971,80 @@ fn open_tty() -> io::Result<fs::File> {
         .open("/dev/tty")
 }
 
-fn read_key(tty: &mut fs::File) -> io::Result<KeyPress> {
-    let mut buf = [0u8; 1];
-    tty.read_exact(&mut buf)?;
-    if buf[0] != ESC {
-        return Ok(KeyPress::Byte(buf[0]));
-    }
+fn read_hint_key(tty: &mut fs::File, leftover: &mut Vec<u8>) -> io::Result<Option<HintKey>> {
+    use crate::browse::parse_browse_input;
 
-    // Bare Esc cancels. CSI/SS3 sequences (arrows, mouse) must not block —
-    // poll briefly then drain, matching quicklook `read -rsn1 -t 0.05`.
-    let fd = tty.as_raw_fd();
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
-    if ready == 0 {
-        return Ok(KeyPress::Cancel);
+    loop {
+        if leftover.is_empty() {
+            let mut buf = [0u8; 1];
+            tty.read_exact(&mut buf)?;
+            if buf[0] != ESC {
+                leftover.push(buf[0]);
+            } else {
+                let fd = tty.as_raw_fd();
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+                if ready == 0 {
+                    return Ok(Some(HintKey::Cancel));
+                }
+                if ready < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                leftover.push(ESC);
+                let mut extra = [0u8; 32];
+                let n = tty.read(&mut extra)?;
+                leftover.extend_from_slice(&extra[..n]);
+            }
+        }
+
+        if let Some(n) = hint_first_input_len(leftover) {
+            let seq: Vec<u8> = leftover.drain(..n).collect();
+            return Ok(map_browse_to_hint(parse_browse_input(&seq)));
+        }
+
+        let mut extra = [0u8; 32];
+        let n = tty.read(&mut extra)?;
+        if n == 0 {
+            leftover.clear();
+            return Ok(None);
+        }
+        leftover.extend_from_slice(&extra[..n]);
     }
-    if ready < 0 {
-        return Err(io::Error::last_os_error());
+}
+
+fn hint_first_input_len(input: &[u8]) -> Option<usize> {
+    match input {
+        [] => None,
+        [ESC, b'[', rest @ ..] => rest
+            .iter()
+            .position(u8::is_ascii_alphabetic)
+            .map(|i| 2 + i + 1)
+            .or_else(|| {
+                rest.iter()
+                    .position(|&b| b == b'M' || b == b'm')
+                    .map(|i| 2 + i + 1)
+            }),
+        [ESC] => Some(1),
+        [ESC, ..] => Some(1),
+        _ => Some(1),
     }
-    let mut extra = [0u8; 32];
-    let _ = tty.read(&mut extra)?;
-    Ok(KeyPress::Ignore)
+}
+
+fn map_browse_to_hint(key: Option<crate::browse::BrowseKey>) -> Option<HintKey> {
+    use crate::browse::BrowseKey;
+    match key? {
+        BrowseKey::Esc | BrowseKey::Char('q') | BrowseKey::Char('Q') => Some(HintKey::Cancel),
+        BrowseKey::Up | BrowseKey::MouseWheelUp => Some(HintKey::ScrollUp { lines: 1 }),
+        BrowseKey::Down | BrowseKey::MouseWheelDown => Some(HintKey::ScrollDown { lines: 1 }),
+        BrowseKey::Char(c) => c.is_ascii().then_some(HintKey::Byte(c as u8)),
+        BrowseKey::Enter | BrowseKey::Left | BrowseKey::Right | BrowseKey::MouseClick { .. } => {
+            None
+        }
+    }
 }
 
 /// Which opener `open_entry` will use after peer-detect (`herdr plugin list`).
@@ -880,6 +1171,22 @@ mod tests {
     }
 
     #[test]
+    fn build_entries_assigns_keys_newest_line_first() {
+        let root = temp_fixture("newest-keys");
+        let cwd = root.join("repo");
+        fs::create_dir_all(cwd.join("src")).unwrap();
+        fs::write(cwd.join("src/old.rs"), "x\n").unwrap();
+        fs::write(cwd.join("src/new.rs"), "y\n").unwrap();
+
+        let text = "src/old.rs\nsrc/new.rs\n";
+        let entries = build_entries(text, &cwd);
+        let old = entries.iter().find(|e| e.raw == "src/old.rs").unwrap();
+        let new = entries.iter().find(|e| e.raw == "src/new.rs").unwrap();
+        assert_eq!(new.key, Some('a'));
+        assert_eq!(old.key, hint_key_for_index(1));
+    }
+
+    #[test]
     fn build_entries_skips_urls_and_assigns_keys() {
         let root = temp_fixture("build");
         let cwd = root.join("repo");
@@ -972,5 +1279,48 @@ mod tests {
         assert_eq!(line_from_open_spec("src/a.rs:42"), Some(42));
         assert_eq!(line_from_open_spec("src/a.rs:10-20"), Some(10));
         assert_eq!(line_from_open_spec("src/a.rs"), None);
+    }
+
+    #[test]
+    fn overlay_paint_cols_matches_stty_width() {
+        assert_eq!(overlay_paint_cols(120), 120);
+        assert_eq!(overlay_paint_cols(1), 20);
+    }
+
+    #[test]
+    fn overlay_layout_reserves_border_status_and_content() {
+        let l = overlay_layout(24);
+        assert_eq!(l.top_border, 1);
+        assert_eq!(l.content_top, 2);
+        assert_eq!(l.content_bottom, 22);
+        assert_eq!(l.content_slots, 21);
+        assert_eq!(l.status_row, 23);
+    }
+
+    #[test]
+    fn trim_trailing_empty_lines_drops_tail_blanks() {
+        let mut lines = vec!["a".into(), "".into(), "".into()];
+        trim_trailing_empty_lines(&mut lines);
+        assert_eq!(lines, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_line_window_bottom_and_scroll_up() {
+        assert_eq!(snapshot_line_window(200, 40, 0), (160, 200));
+        assert_eq!(snapshot_line_window(200, 40, 160), (0, 40));
+        assert_eq!(snapshot_line_window(10, 40, 0), (0, 10));
+    }
+
+    #[test]
+    fn wrap_line_preserves_ansi_and_splits_on_cell_width() {
+        let line = format!("\x1b[31m{}\x1b[0m", "a".repeat(10));
+        let wrapped = wrap_line_preserve_ansi(&line, 4);
+        assert_eq!(wrapped.len(), 3);
+        assert!(wrapped[0].contains("\x1b[31m"));
+        let visible_a: usize = wrapped
+            .iter()
+            .map(|r| r.chars().filter(|c| *c == 'a').count())
+            .sum();
+        assert_eq!(visible_a, 10);
     }
 }

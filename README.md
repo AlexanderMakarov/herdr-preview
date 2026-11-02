@@ -5,7 +5,7 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 ## How to use
 
 1. Install the plugin and bind `prefix+/` (see [Install](#install)).
-2. All file paths in the visible pane text are highlighted with letter hints so you can preview them. If nothing openable is on screen, you get a short notice.
+2. Paths in the focused pane’s recent output (bounded tail, not the whole scrollback) get letter hints in the **Preview** overlay. If nothing openable is in that tail, you get a short notice.
 3. Press a letter to open the pick:
    - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it). A file **outside this pane’s cwd/repo** opens file-viewer in a **new tab** rooted at that file’s tree.
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).

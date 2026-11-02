@@ -57,7 +57,7 @@ if [ "$1" = pane ] && [ "$2" = current ]; then
 EOF
   exit 0
 fi
-if [ "$1" = pane ] && [ "$2" = read ] && [ "$3" = w9:p1 ] && [ "$4" = --source ] && [ "$5" = visible ] && [ "$6" = --format ] && [ "$7" = text ]; then
+if [ "$1" = pane ] && [ "$2" = read ] && [ "$3" = w9:p1 ] && [ "$4" = --source ] && [ "$5" = recent ] && [ "$6" = --lines ] && [ "$7" = 200 ] && [ "$8" = --format ] && [ "$9" = text ]; then
   printf '%s' 'src/main.rs:10: fn main() {
 https://example.com/pr/1
 '
@@ -119,8 +119,8 @@ exit 1
 }
 
 #[test]
-fn read_focused_snapshot_never_uses_scrollback_source() {
-    let root = temp_fixture("visible-only");
+fn read_focused_snapshot_uses_bounded_recent_tail() {
+    let root = temp_fixture("recent-tail");
     let log = root.join("invocations.log");
     let herdr = root.join("herdr");
     write_executable(
@@ -136,7 +136,7 @@ EOF
   exit 0
 fi
 if [ "$1" = pane ] && [ "$2" = read ]; then
-  printf 'visible only\n'
+  printf 'recent tail\n'
   exit 0
 fi
 exit 1
@@ -147,6 +147,7 @@ exit 1
     );
 
     with_herdr_bin(&herdr, || {
+        std::env::remove_var("HERDR_PREVIEW_HINT_LINES");
         read_focused_snapshot().expect("snapshot");
     });
 
@@ -158,17 +159,53 @@ exit 1
         .collect();
 
     assert!(args.windows(2).any(|w| w == ["pane", "read"]));
-    assert!(args.windows(2).any(|w| w == ["--source", "visible"]));
+    assert!(args.windows(2).any(|w| w == ["--source", "recent"]));
+    assert!(args.windows(2).any(|w| w == ["--lines", "200"]));
     assert!(args.windows(2).any(|w| w == ["--format", "text"]));
-    for (idx, arg) in args.iter().enumerate() {
-        if arg == "--source" {
-            assert_ne!(args.get(idx + 1).map(String::as_str), Some("recent"));
-            assert_ne!(
-                args.get(idx + 1).map(String::as_str),
-                Some("recent-unwrapped")
-            );
-        }
-    }
+}
+
+#[test]
+fn read_focused_snapshot_respects_hint_lines_env() {
+    let root = temp_fixture("hint-lines-env");
+    let log = root.join("invocations.log");
+    let herdr = root.join("herdr");
+    write_executable(
+        &herdr,
+        &format!(
+            r#"#!/bin/bash
+log={log:?}
+printf '%s\0' "$@" >>"$log"
+if [ "$1" = pane ] && [ "$2" = current ]; then
+  cat <<'EOF'
+{fixture}
+EOF
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = read ]; then
+  printf 'tail\n'
+  exit 0
+fi
+exit 1
+"#,
+            log = log.display(),
+            fixture = PANE_CURRENT_FIXTURE
+        ),
+    );
+
+    with_herdr_bin(&herdr, || {
+        std::env::set_var("HERDR_PREVIEW_HINT_LINES", "500");
+        read_focused_snapshot().expect("snapshot");
+        std::env::remove_var("HERDR_PREVIEW_HINT_LINES");
+    });
+
+    let bytes = fs::read(&log).unwrap();
+    let args: Vec<String> = bytes
+        .split(|&b| b == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect();
+
+    assert!(args.windows(2).any(|w| w == ["--lines", "500"]));
 }
 
 #[test]
