@@ -2,9 +2,8 @@
 
 ## Before coding
 
-1. Read `docs/superpowers/specs/2026-08-09-herdr-preview-design.md` end-to-end (including **Brainstorm Q&A**).
-2. Read `docs/superpowers/plans/2026-08-09-herdr-preview.md`.
-3. Implement with **superpowers:subagent-driven-development** (preferred) or **superpowers:executing-plans**, task-by-task. Do not invent scope outside the plan without updating the spec first.
+1. Read this file and the README end-to-end.
+2. Implement with **superpowers:subagent-driven-development** (preferred) or **superpowers:executing-plans**, task-by-task. Do not invent scope outside the hard product constraints below without agreeing it first.
 
 ## Hard product constraints (do not “helpfully” violate)
 
