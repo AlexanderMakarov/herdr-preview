@@ -189,6 +189,28 @@ fn file_viewer_bin(herdr_bin: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// herdr-managed config dir for herdr-file-viewer (`editor`, renderers, …).
+///
+/// `plugin pane open` injects `HERDR_PLUGIN_CONFIG_DIR` itself. The out-of-tree
+/// path uses `tab create` + `pane run` on the raw binary, which does not — so
+/// we must pass it or FV falls back to `~/.config/herdr-file-viewer/` and
+/// misses the real config (e.g. `editor = "xed"` → "no editor configured").
+fn file_viewer_config_dir(herdr_bin: &Path) -> Option<PathBuf> {
+    let output = Command::new(herdr_bin)
+        .args(["plugin", "config-dir", "herdr-file-viewer"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(text))
+    }
+}
+
 fn parse_tab_create_pane_id(stdout: &[u8]) -> io::Result<String> {
     let value: Value = serde_json::from_slice(stdout)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -289,38 +311,44 @@ pub fn open_file_viewer(
 ) -> io::Result<()> {
     let herdr_bin = resolve_herdr_bin();
     let (root, open_target, in_origin_tree) = open_target_for_cwd(open_spec, cwd);
-    let env = format!("HERDR_FILE_VIEWER_OPEN={open_target}");
+    let open_env = format!("HERDR_FILE_VIEWER_OPEN={open_target}");
+    let config_env = file_viewer_config_dir(&herdr_bin)
+        .map(|dir| format!("HERDR_PLUGIN_CONFIG_DIR={}", dir.display()));
 
     if in_origin_tree {
         if let Some(origin) = origin_pane_id.filter(|id| !id.is_empty()) {
             focus_pane(&herdr_bin, origin)?;
-            let status = Command::new(&herdr_bin)
-                .args([
-                    "plugin",
-                    "pane",
-                    "open",
-                    "--plugin",
-                    "herdr-file-viewer",
-                    "--entrypoint",
-                    "file-viewer",
-                    "--placement",
-                    "split",
-                    "--direction",
-                    "right",
-                    "--target-pane",
-                    origin,
-                    "--focus",
-                    "--env",
-                    &env,
-                ])
-                .status()
-                .map_err(|err| {
-                    if err.kind() == io::ErrorKind::NotFound {
-                        io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
-                    } else {
-                        err
-                    }
-                })?;
+            let mut cmd = Command::new(&herdr_bin);
+            cmd.args([
+                "plugin",
+                "pane",
+                "open",
+                "--plugin",
+                "herdr-file-viewer",
+                "--entrypoint",
+                "file-viewer",
+                "--placement",
+                "split",
+                "--direction",
+                "right",
+                "--target-pane",
+                origin,
+                "--focus",
+                "--env",
+                &open_env,
+            ]);
+            // Belt-and-suspenders: herdr usually injects this for plugin panes,
+            // but passing it matches the tab-run path and the Windows FV launchers.
+            if let Some(ref cfg) = config_env {
+                cmd.args(["--env", cfg]);
+            }
+            let status = cmd.status().map_err(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+                } else {
+                    err
+                }
+            })?;
             return if status.success() {
                 Ok(())
             } else {
@@ -331,29 +359,36 @@ pub fn open_file_viewer(
         }
     }
 
-    open_file_viewer_via_tab(&herdr_bin, &root, &env)
+    open_file_viewer_via_tab(&herdr_bin, &root, &open_env, config_env.as_deref())
 }
 
-fn open_file_viewer_via_tab(herdr_bin: &Path, root: &Path, env: &str) -> io::Result<()> {
+fn open_file_viewer_via_tab(
+    herdr_bin: &Path,
+    root: &Path,
+    open_env: &str,
+    config_env: Option<&str>,
+) -> io::Result<()> {
     let viewer = file_viewer_bin(herdr_bin)?;
-    let create = Command::new(herdr_bin)
-        .args([
-            "tab",
-            "create",
-            "--cwd",
-            &root.to_string_lossy(),
-            "--focus",
-            "--env",
-            env,
-        ])
-        .output()
-        .map_err(|err| {
-            if err.kind() == io::ErrorKind::NotFound {
-                io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
-            } else {
-                err
-            }
-        })?;
+    let mut cmd = Command::new(herdr_bin);
+    cmd.args([
+        "tab",
+        "create",
+        "--cwd",
+        &root.to_string_lossy(),
+        "--focus",
+        "--env",
+        open_env,
+    ]);
+    if let Some(cfg) = config_env {
+        cmd.args(["--env", cfg]);
+    }
+    let create = cmd.output().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+        } else {
+            err
+        }
+    })?;
     if !create.status.success() {
         return Err(io::Error::other(format!(
             "herdr tab create exited with {}",

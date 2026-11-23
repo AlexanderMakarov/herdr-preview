@@ -16,7 +16,7 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 **Released install** (once version tags are published):
 
 ```sh
-herdr plugin install github:AlexanderMakarov/herdr-preview@v0.1.0
+herdr plugin install github:AlexanderMakarov/herdr-preview@v0.1.1
 ```
 
 **Local development** (`herdr plugin link` does not run the manifest `[[build]]` step — build first):

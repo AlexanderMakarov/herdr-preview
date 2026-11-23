@@ -228,6 +228,8 @@ fn open_file_viewer_roots_tab_at_cwd_then_runs_viewer_bin() {
         r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
         plugin_root.display()
     );
+    let config_dir = root.join("fv-config");
+    fs::create_dir_all(&config_dir).unwrap();
     write_executable(
         &herdr,
         &format!(
@@ -235,6 +237,10 @@ fn open_file_viewer_roots_tab_at_cwd_then_runs_viewer_bin() {
 log={log:?}
 if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
   printf '%s\n' '{list_json}'
+  exit 0
+fi
+if [ "$1" = plugin ] && [ "$2" = config-dir ]; then
+  printf '%s\n' '{config_dir}'
   exit 0
 fi
 if [ "$1" = tab ] && [ "$2" = create ]; then
@@ -251,6 +257,7 @@ exit 0
 "#,
             log = log.display(),
             list_json = list_json,
+            config_dir = config_dir.display(),
             log_body = log_args_stub(&log),
         ),
     );
@@ -282,6 +289,12 @@ exit 0
     assert!(create
         .windows(2)
         .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
+    assert!(
+        create.windows(2).any(|w| {
+            w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
+        }),
+        "tab create must pass HERDR_PLUGIN_CONFIG_DIR so FV reads editor config: {create:?}"
+    );
 
     let run = &invocations[1];
     assert!(run.windows(2).any(|w| w == ["pane", "run"]));
@@ -353,6 +366,8 @@ fn open_file_viewer_with_origin_uses_tab_when_file_is_outside_origin_tree() {
         r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
         plugin_root.display()
     );
+    let config_dir = root.join("fv-config");
+    fs::create_dir_all(&config_dir).unwrap();
     write_executable(
         &herdr,
         &format!(
@@ -360,6 +375,10 @@ fn open_file_viewer_with_origin_uses_tab_when_file_is_outside_origin_tree() {
 log={log:?}
 if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
   printf '%s\n' '{list_json}'
+  exit 0
+fi
+if [ "$1" = plugin ] && [ "$2" = config-dir ]; then
+  printf '%s\n' '{config_dir}'
   exit 0
 fi
 if [ "$1" = tab ] && [ "$2" = create ]; then
@@ -376,6 +395,7 @@ exit 0
 "#,
             log = log.display(),
             list_json = list_json,
+            config_dir = config_dir.display(),
             log_body = log_args_stub(&log),
         ),
     );
@@ -430,6 +450,12 @@ exit 0
     assert!(create
         .windows(2)
         .any(|w| { w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=docs/usage.md" }));
+    assert!(
+        create.windows(2).any(|w| {
+            w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
+        }),
+        "out-of-tree tab must pass HERDR_PLUGIN_CONFIG_DIR: {create:?}"
+    );
     assert!(invocations
         .iter()
         .any(|args| args.windows(2).any(|w| w == ["pane", "run"])));
