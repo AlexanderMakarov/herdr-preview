@@ -146,6 +146,8 @@ fn herdr_with_plugin_list(root: &Path, list_body: &str) -> PathBuf {
         r#"{"result":{"plugins":[]}}"#.to_string()
     };
 
+    let config_dir = root.join("fv-config");
+    fs::create_dir_all(&config_dir).unwrap();
     write_executable(
         &herdr,
         &format!(
@@ -156,6 +158,10 @@ if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
 fi
 if [ "$1" = plugin ] && [ "$2" = list ]; then
   exec "{plugin_list}"
+fi
+if [ "$1" = plugin ] && [ "$2" = config-dir ]; then
+  printf '%s\n' '{config_dir}'
+  exit 0
 fi
 log={log:?}
 if [ "$1" = tab ] && [ "$2" = create ]; then
@@ -168,6 +174,7 @@ exit 0
 "#,
             plugin_list = plugin_list.display(),
             list_json = list_json,
+            config_dir = config_dir.display(),
             log = log.display(),
             body = log_args_stub(&log)
         ),
@@ -265,6 +272,13 @@ fn fv_listed_routes_file_to_file_viewer_open_env() {
     assert!(create
         .windows(2)
         .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
+    let config_dir = root.join("fv-config");
+    assert!(
+        create.windows(2).any(|w| {
+            w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
+        }),
+        "expected HERDR_PLUGIN_CONFIG_DIR on tab create: {create:?}"
+    );
     let run = &invocations[1];
     assert!(run.windows(2).any(|w| w == ["pane", "run"]));
     assert!(!invocations

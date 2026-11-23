@@ -5,7 +5,7 @@
 
 id = "herdr-preview"
 name = "herdr-preview"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hint-pick file paths from the focused pane recent tail; preview via file-viewer or less."
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
