@@ -2,7 +2,7 @@
 
 Opening a path that appears in a Herdr pane — plans, logs, error output — takes too many steps: copy the path, leave the flow, summon a viewer, find the file, jump to the line. **herdr-preview** is a Herdr plugin that cuts that to two keystrokes: `prefix+/`, then one letter over the path you want.
 
-![herdr-preview: prefix+/ letter hints, then open in file-viewer](docs/assets/herdr-preview-demo.gif)
+![herdr-preview: prefix+/ letter hints, then open in file-viewer](assets/herdr-preview-demo.gif)
 
 ## How to use
 

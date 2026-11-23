@@ -1,5 +1,6 @@
 # Bootstrapped by design session — see README / AGENTS.md
 /target/
+/docs/
 **/*.rs.bk
 .DS_Store
 *.swp
