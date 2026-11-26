@@ -7,7 +7,7 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 ## How to use
 
 1. Install the plugin and bind `prefix+/` (see [Install](#install)).
-2. Paths in the focused pane’s recent output (bounded tail, not the whole scrollback) get letter hints in the **Preview** overlay. If nothing openable is in that tail, you get a short notice.
+2. Paths in the focused pane’s recent output (bounded tail, not the whole scrollback) get letter hints in the **Preview** overlay. If nothing openable is in that tail, you get a short notice. Relative paths resolve against the pane’s working directory; in agent panes (Claude Code, Cursor, …) that is the agent’s own directory, not one of its MCP server processes.
 3. Press a letter to open the pick:
    - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it), rooted at the file’s own repo (or folder outside git), wherever the file lives.
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
