@@ -18,9 +18,6 @@ pub struct BrowseState {
     pub selected: usize,
     pub scroll: usize,
     pub notice: Option<String>,
-    /// Origin pane cwd; when the listing is outside this tree, the footer
-    /// warns that file-viewer will open in a new tab.
-    pub origin_cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +65,6 @@ impl BrowseState {
                 selected: 0,
                 scroll: 0,
                 notice: None,
-                origin_cwd: None,
             },
             Err(_) => Self {
                 cwd: cwd.clone(),
@@ -76,7 +72,6 @@ impl BrowseState {
                 selected: 0,
                 scroll: 0,
                 notice: Some("cannot read directory".into()),
-                origin_cwd: None,
             },
         }
     }
@@ -271,7 +266,6 @@ const DIM: &str = "\x1b[2;90m";
 const RESET: &str = "\x1b[0m";
 const REV: &str = "\x1b[7m";
 const LEGEND: &str = "browse · j/k move · enter open · h parent · l enter · q cancel";
-const OUTSIDE_TAB: &str = "outside this tab's cwd · file-viewer opens in a new tab · j/k enter q";
 
 pub fn render_browse(state: &BrowseState, rows: u16, cols: u16) -> String {
     let rows = rows.max(2) as usize;
@@ -300,17 +294,7 @@ pub fn render_browse(state: &BrowseState, rows: u16, cols: u16) -> String {
         lines.push(line);
     }
 
-    let footer = if let Some(notice) = &state.notice {
-        notice.as_str()
-    } else if state
-        .origin_cwd
-        .as_ref()
-        .is_some_and(|origin| !crate::open::is_under_origin_tree(&state.cwd, origin))
-    {
-        OUTSIDE_TAB
-    } else {
-        LEGEND
-    };
+    let footer = state.notice.as_deref().unwrap_or(LEGEND);
     lines.push(truncate_chars(footer, cols));
     lines.join("\n")
 }
@@ -419,7 +403,6 @@ pub fn run_browse_overlay() -> Result<(), io::Error> {
     let origin = std::env::var("HERDR_PREVIEW_BROWSE_ORIGIN").ok();
 
     let mut state = BrowseState::open(Path::new(&start));
-    state.origin_cwd = Some(PathBuf::from(&origin_cwd));
     match browse_pick(&mut state)? {
         BrowseOutcome::OpenFile { path } => {
             crate::hint::open_preview_file(&path, Path::new(&origin_cwd), origin.as_deref())

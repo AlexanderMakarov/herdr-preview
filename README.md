@@ -7,11 +7,11 @@ Opening a path that appears in a Herdr pane — plans, logs, error output — ta
 ## How to use
 
 1. Install the plugin and bind `prefix+/` (see [Install](#install)).
-2. Paths in the focused pane’s recent output (bounded tail, not the whole scrollback) get letter hints in the **Preview** overlay. If nothing openable is in that tail, you get a short notice.
+2. Paths in the focused pane’s recent output (bounded tail, not the whole scrollback) get letter hints in the **Preview** overlay. If nothing openable is in that tail, you get a short notice. Relative paths resolve against the pane’s cwd (the agent’s own cwd in agent panes).
 3. Press a letter to open the pick:
-   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split; `q` closes it). A file **outside this pane’s cwd/repo** opens file-viewer in a **new tab** rooted at that file’s tree.
+   - **File path** → [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) when that plugin is installed (right split rooted at the file’s repo; `q` closes it).
    - **File path, no file-viewer** → **`less`** in an overlay above the current pane ([reduced mode](#preview-file-viewer-vs-less-fallback)).
-   - **Directory path** → browse overlay listing that folder. Arrow keys / `j` `k` move; `Enter` or click opens a file (file-viewer or `less`) or enters a subfolder; `q` / Esc dismisses browse only. If the listing is outside this pane’s cwd, the overlay says so and a file-viewer pick opens in a new tab.
+   - **Directory path** → browse overlay listing that folder. Arrow keys / `j` `k` move; `Enter` or click opens a file (file-viewer or `less`) or enters a subfolder; `q` / Esc dismisses browse only.
 
 ## Install
 
@@ -52,8 +52,6 @@ herdr-preview does not render file content itself. It routes picks to a peer ope
 | --- | --- | --- |
 | **herdr-file-viewer** | Plugin installed and listed by `herdr plugin list` | Opens via `HERDR_FILE_VIEWER_OPEN` — rendered Markdown, syntax highlighting, git-aware tree, diff view, and the viewer's normal keys. |
 | **`less` overlay** | File-viewer not installed | A `less` pane above your current app — **reduced functionality** by design. |
-
-When the path is **outside the current pane’s cwd/repo**, file-viewer cannot reveal it in that pane’s tree, so herdr-preview opens it in a **new tab** rooted at the file’s own tree. The browse overlay footer says `outside this tab's cwd · file-viewer opens in a new tab` in that case. Paths still under the pane stay a right split.
 
 **Reduced `less` mode** (when file-viewer is absent):
 

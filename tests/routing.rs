@@ -269,9 +269,16 @@ fn fv_listed_routes_file_to_file_viewer_open_env() {
     );
     let create = &invocations[0];
     assert!(create.windows(2).any(|w| w == ["tab", "create"]));
-    assert!(create
-        .windows(2)
-        .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
+    let abs_open = format!(
+        "HERDR_FILE_VIEWER_OPEN={}:42",
+        file.canonicalize().unwrap().display()
+    );
+    assert!(
+        create
+            .windows(2)
+            .any(|w| w[0] == "--env" && w[1] == abs_open),
+        "expected absolute OPEN {abs_open}: {create:?}"
+    );
     let config_dir = root.join("fv-config");
     assert!(
         create.windows(2).any(|w| {
