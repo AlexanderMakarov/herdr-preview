@@ -105,30 +105,6 @@ fn split_open_spec(open_spec: &str) -> (&str, &str) {
     (open_spec, "")
 }
 
-fn git_toplevel(start: &Path) -> Option<PathBuf> {
-    let dir = if start.is_dir() {
-        start
-    } else {
-        start.parent()?
-    };
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(text))
-    }
-}
-
 fn file_viewer_plugin_root(herdr_bin: &Path) -> io::Result<PathBuf> {
     let output = Command::new(herdr_bin)
         .args(["plugin", "list", "--json"])
@@ -250,16 +226,13 @@ fn focus_pane(herdr_bin: &Path, pane_id: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// True when `path` is inside the origin pane's git worktree (or cwd if not a repo).
-pub fn is_under_origin_tree(path: &Path, origin_cwd: &Path) -> bool {
-    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let origin_root = git_toplevel(origin_cwd).unwrap_or_else(|| origin_cwd.to_path_buf());
-    let origin_root = origin_root.canonicalize().unwrap_or(origin_root);
-    abs.starts_with(&origin_root)
-}
-
-/// `(viewer_root, OPEN spec, file is under origin pane tree)`.
-fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String, bool) {
+/// `(viewer start dir, absolute OPEN spec)` for `open_spec` resolved against `cwd`.
+///
+/// The start dir is the file's own directory. FV widens it to that directory's
+/// git toplevel (else keeps it) and accepts an absolute OPEN under that root,
+/// so we never guess FV's root — and never depend on the origin pane's cwd,
+/// which for agent panes can be an MCP child's directory (`foreground_cwd`).
+fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String) {
     let (path_part, suffix) = split_open_spec(open_spec);
     let candidate = if Path::new(path_part).is_absolute() {
         PathBuf::from(path_part)
@@ -267,69 +240,53 @@ fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String, bool) {
         cwd.join(path_part)
     };
     let abs = candidate.canonicalize().unwrap_or(candidate);
-
-    let origin_root = git_toplevel(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let origin_root = origin_root.canonicalize().unwrap_or(origin_root);
-    let in_origin_tree = is_under_origin_tree(&abs, cwd);
-
-    // In-tree: OPEN is relative to the origin pane's worktree/cwd so a split
-    // viewer rooted there can reveal it. Out-of-tree: root at the file's git
-    // toplevel (or its parent) — never send an above-root absolute OPEN.
-    let root = if in_origin_tree {
-        origin_root
+    let start = if abs.is_dir() {
+        abs.clone()
     } else {
-        let parent = abs.parent().unwrap_or(abs.as_path());
-        git_toplevel(parent)
-            .unwrap_or_else(|| parent.to_path_buf())
-            .canonicalize()
-            .unwrap_or_else(|_| parent.to_path_buf())
+        abs.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| abs.clone())
     };
-
-    let rel = abs
-        .strip_prefix(&root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| abs.to_string_lossy().into_owned());
-    (root, format!("{rel}{suffix}"), in_origin_tree)
+    (start, format!("{}{suffix}", abs.display()))
 }
 
 /// Open a path in herdr-file-viewer.
 ///
-/// When the file is under the origin pane's worktree/cwd and an origin pane id
-/// is known: `pane split <origin> --direction right --cwd <root>` with OPEN env,
-/// then `pane run <new> exec <abs-viewer-bin>` and focus the new pane.
+/// With an origin pane: `pane split <origin> --direction right --cwd <file dir>`,
+/// then `pane run <new> exec <abs-viewer-bin>` and focus the new pane. Works for
+/// files anywhere — FV roots at the file's own tree, not the origin pane's.
 ///
-/// Otherwise (no origin, or the file is outside that tree) use
-/// `tab create --cwd <file's tree>` + `pane run <abs-viewer-bin>` so OPEN is
-/// under the viewer root. Passing an above-root path to a split on the origin
-/// pane makes FV reveal fail and land on the pane cwd tree.
+/// Without one: `tab create --cwd <file dir>` + `pane run <abs-viewer-bin>`.
 ///
-/// Both paths set the cwd explicitly and run the absolute binary. `plugin pane
-/// open` roots FV from the plugin launch context, which from the hint overlay
-/// can be the FV plugin package instead of the origin pane (issue #1).
+/// Both pass `HERDR_FILE_VIEWER_ROOT` (FV's explicit-root override, beats any
+/// inherited launch context) and an absolute `HERDR_FILE_VIEWER_OPEN`, and run
+/// the absolute binary: `plugin pane open` roots FV from the plugin launch
+/// context, which from the hint overlay can be the FV plugin package (issue #1).
 pub fn open_file_viewer(
     open_spec: &str,
     cwd: &Path,
     origin_pane_id: Option<&str>,
 ) -> io::Result<()> {
     let herdr_bin = resolve_herdr_bin();
-    let (root, open_target, in_origin_tree) = open_target_for_cwd(open_spec, cwd);
-    let open_env = format!("HERDR_FILE_VIEWER_OPEN={open_target}");
-    let config_env = file_viewer_config_dir(&herdr_bin)
-        .map(|dir| format!("HERDR_PLUGIN_CONFIG_DIR={}", dir.display()));
-
-    if in_origin_tree {
-        if let Some(origin) = origin_pane_id.filter(|id| !id.is_empty()) {
-            return open_file_viewer_via_split(
-                &herdr_bin,
-                origin,
-                &root,
-                &open_env,
-                config_env.as_deref(),
-            );
-        }
+    let (start, open_target) = open_target_for_cwd(open_spec, cwd);
+    let mut envs = vec![
+        format!("HERDR_FILE_VIEWER_ROOT={}", start.display()),
+        format!("HERDR_FILE_VIEWER_OPEN={open_target}"),
+    ];
+    if let Some(dir) = file_viewer_config_dir(&herdr_bin) {
+        envs.push(format!("HERDR_PLUGIN_CONFIG_DIR={}", dir.display()));
     }
 
-    open_file_viewer_via_tab(&herdr_bin, &root, &open_env, config_env.as_deref())
+    match origin_pane_id.filter(|id| !id.is_empty()) {
+        Some(origin) => open_file_viewer_via_split(&herdr_bin, origin, &start, &envs),
+        None => open_file_viewer_via_tab(&herdr_bin, &start, &envs),
+    }
+}
+
+fn push_envs(cmd: &mut Command, envs: &[String]) {
+    for env in envs {
+        cmd.args(["--env", env]);
+    }
 }
 
 fn herdr_not_found(err: io::Error) -> io::Error {
@@ -343,9 +300,8 @@ fn herdr_not_found(err: io::Error) -> io::Error {
 fn open_file_viewer_via_split(
     herdr_bin: &Path,
     origin: &str,
-    root: &Path,
-    open_env: &str,
-    config_env: Option<&str>,
+    start: &Path,
+    envs: &[String],
 ) -> io::Result<()> {
     let viewer = file_viewer_bin(herdr_bin)?;
     let mut cmd = Command::new(herdr_bin);
@@ -356,13 +312,9 @@ fn open_file_viewer_via_split(
         "--direction",
         "right",
         "--cwd",
-        &root.to_string_lossy(),
-        "--env",
-        open_env,
+        &start.to_string_lossy(),
     ]);
-    if let Some(cfg) = config_env {
-        cmd.args(["--env", cfg]);
-    }
+    push_envs(&mut cmd, envs);
     let split = cmd.output().map_err(herdr_not_found)?;
     if !split.status.success() {
         return Err(io::Error::other(format!(
@@ -404,33 +356,18 @@ fn parse_pane_split_pane_id(stdout: &[u8]) -> io::Result<String> {
         })
 }
 
-fn open_file_viewer_via_tab(
-    herdr_bin: &Path,
-    root: &Path,
-    open_env: &str,
-    config_env: Option<&str>,
-) -> io::Result<()> {
+fn open_file_viewer_via_tab(herdr_bin: &Path, start: &Path, envs: &[String]) -> io::Result<()> {
     let viewer = file_viewer_bin(herdr_bin)?;
     let mut cmd = Command::new(herdr_bin);
     cmd.args([
         "tab",
         "create",
         "--cwd",
-        &root.to_string_lossy(),
+        &start.to_string_lossy(),
         "--focus",
-        "--env",
-        open_env,
     ]);
-    if let Some(cfg) = config_env {
-        cmd.args(["--env", cfg]);
-    }
-    let create = cmd.output().map_err(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
-        } else {
-            err
-        }
-    })?;
+    push_envs(&mut cmd, envs);
+    let create = cmd.output().map_err(herdr_not_found)?;
     if !create.status.success() {
         return Err(io::Error::other(format!(
             "herdr tab create exited with {}",
@@ -443,13 +380,7 @@ fn open_file_viewer_via_tab(
         .args(["pane", "run", &pane_id])
         .arg(&viewer)
         .status()
-        .map_err(|err| {
-            if err.kind() == io::ErrorKind::NotFound {
-                io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
-            } else {
-                err
-            }
-        })?;
+        .map_err(herdr_not_found)?;
 
     if status.success() {
         Ok(())

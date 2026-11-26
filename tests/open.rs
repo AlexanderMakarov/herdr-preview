@@ -142,29 +142,8 @@ fn with_path_only<F: FnOnce()>(root: &Path, f: F) {
     }
 }
 
-/// Like [`with_path_only`], but keeps system dirs on PATH so real `git` /
-/// shells remain reachable. Needed when a test must call `git` while holding
-/// the env lock (parallel tests otherwise strip PATH to the fixture root).
-fn with_path_plus_system<F: FnOnce()>(root: &Path, f: F) {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-    let old_path = std::env::var_os("PATH");
-    let old_herdr = std::env::var_os("HERDR_BIN_PATH");
-    let system = old_path
-        .as_ref()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| {
-            "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin".to_string()
-        });
-    std::env::set_var("PATH", format!("{}:{system}", root.display()));
-    f();
-    match old_herdr {
-        Some(value) => std::env::set_var("HERDR_BIN_PATH", value),
-        None => std::env::remove_var("HERDR_BIN_PATH"),
-    }
-    match old_path {
-        Some(value) => std::env::set_var("PATH", value),
-        None => std::env::remove_var("PATH"),
-    }
+fn has_env(args: &[String], env: &str) -> bool {
+    args.windows(2).any(|w| w[0] == "--env" && w[1] == env)
 }
 
 #[test]
@@ -278,17 +257,27 @@ exit 0
         "tab create + pane run: {invocations:?}"
     );
 
+    let src_dir = cwd.canonicalize().unwrap().join("src");
     let create = &invocations[0];
     assert!(create.windows(2).any(|w| w == ["tab", "create"]));
-    assert!(create.contains(&"--cwd".to_string()));
     assert!(
-        create.contains(&cwd.canonicalize().unwrap().to_string_lossy().into_owned())
-            || create.contains(&cwd.to_string_lossy().into_owned())
+        create
+            .windows(2)
+            .any(|w| w[0] == "--cwd" && w[1] == src_dir.to_string_lossy()),
+        "tab must start in the file's dir: {create:?}"
     );
     assert!(create.contains(&"--focus".to_string()));
-    assert!(create
-        .windows(2)
-        .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs:42"));
+    assert!(has_env(
+        create,
+        &format!("HERDR_FILE_VIEWER_ROOT={}", src_dir.display())
+    ));
+    assert!(has_env(
+        create,
+        &format!(
+            "HERDR_FILE_VIEWER_OPEN={}:42",
+            src_dir.join("app.rs").display()
+        )
+    ));
     assert!(
         create.windows(2).any(|w| {
             w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
@@ -377,17 +366,24 @@ exit 0
         "split origin: {split:?}"
     );
     assert!(split.windows(2).any(|w| w == ["--direction", "right"]));
+    let src_dir = cwd.canonicalize().unwrap().join("src");
     assert!(
-        split.windows(2).any(|w| {
-            w[0] == "--cwd"
-                && (w[1] == cwd.canonicalize().unwrap().to_string_lossy()
-                    || w[1] == cwd.to_string_lossy())
-        }),
-        "split must root at origin tree: {split:?}"
+        split
+            .windows(2)
+            .any(|w| w[0] == "--cwd" && w[1] == src_dir.to_string_lossy()),
+        "split must start in the file's dir: {split:?}"
     );
-    assert!(split
-        .windows(2)
-        .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs"));
+    assert!(has_env(
+        split,
+        &format!("HERDR_FILE_VIEWER_ROOT={}", src_dir.display())
+    ));
+    assert!(has_env(
+        split,
+        &format!(
+            "HERDR_FILE_VIEWER_OPEN={}",
+            src_dir.join("app.rs").display()
+        )
+    ));
     assert!(
         split.windows(2).any(|w| {
             w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
@@ -421,7 +417,10 @@ exit 0
 }
 
 #[test]
-fn open_file_viewer_with_origin_uses_tab_when_file_is_outside_origin_tree() {
+fn open_file_viewer_with_origin_splits_even_when_file_is_outside_origin_tree() {
+    // Agent panes can report an MCP child's dir as the pane cwd, so "outside
+    // the origin tree" is unreliable. FV roots at HERDR_FILE_VIEWER_ROOT (the
+    // file's own dir, widened to its git toplevel), so a split works anywhere.
     let root = temp_fixture("fv-outside");
     let log = stub_log_path(&root);
     let herdr = root.join("herdr");
@@ -434,8 +433,6 @@ fn open_file_viewer_with_origin_uses_tab_when_file_is_outside_origin_tree() {
         r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
         plugin_root.display()
     );
-    let config_dir = root.join("fv-config");
-    fs::create_dir_all(&config_dir).unwrap();
     write_executable(
         &herdr,
         &format!(
@@ -446,16 +443,11 @@ if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
   exit 0
 fi
 if [ "$1" = plugin ] && [ "$2" = config-dir ]; then
-  printf '%s\n' '{config_dir}'
-  exit 0
+  exit 1
 fi
-if [ "$1" = tab ] && [ "$2" = create ]; then
+if [ "$1" = pane ] && [ "$2" = split ]; then
   {log_body}
-  printf '%s\n' '{{"result":{{"root_pane":{{"pane_id":"w2:p1"}}}}}}'
-  exit 0
-fi
-if [ "$1" = pane ] && [ "$2" = run ]; then
-  {log_body}
+  printf '%s\n' '{{"result":{{"pane":{{"pane_id":"w9:fv"}}}}}}'
   exit 0
 fi
 {log_body}
@@ -463,70 +455,62 @@ exit 0
 "#,
             log = log.display(),
             list_json = list_json,
-            config_dir = config_dir.display(),
             log_body = log_args_stub(&log),
         ),
     );
     let _gh = fake_gh(&root);
 
-    let origin_cwd = root.join("repo");
-    fs::create_dir_all(origin_cwd.join("src")).unwrap();
-    fs::write(origin_cwd.join("src/app.rs"), "fn main() {}\n").unwrap();
+    // Stand-in for an agent pane whose reported cwd is an unrelated MCP dir.
+    let origin_cwd = root.join("mcp-server");
+    fs::create_dir_all(&origin_cwd).unwrap();
+    let docs = root.join("Project files/spec dir");
+    fs::create_dir_all(&docs).unwrap();
+    let file = docs.join("Jane Doe - spec.md");
+    fs::write(&file, "# spec\n").unwrap();
 
-    let other = root.join("other");
-    fs::create_dir_all(other.join("docs")).unwrap();
-    let file = other.join("docs/usage.md");
-    fs::write(&file, "# usage\n").unwrap();
-
-    // Hold PATH lock for git init + open: other tests set PATH to fixture-only,
-    // which races `Command::new("git")` on macOS CI (NotFound).
-    with_path_plus_system(&root, || {
-        let status = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&other)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .status()
-            .expect("git init");
-        assert!(status.success(), "git init other tree");
-
+    with_path_only(&root, || {
         std::env::set_var("HERDR_BIN_PATH", &herdr);
-        open_file_viewer(&file.to_string_lossy(), &origin_cwd, Some("w9:shell"))
-            .expect("open_file_viewer");
+        open_file_viewer(
+            &format!("{}:7", file.display()),
+            &origin_cwd,
+            Some("w9:agent"),
+        )
+        .expect("open_file_viewer");
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
     assert!(
-        !invocations.iter().any(|args| {
-            args.windows(3).any(|w| w == ["plugin", "pane", "open"])
-                && args.windows(2).any(|w| w == ["--target-pane", "w9:shell"])
-        }),
-        "out-of-tree file must not split onto the origin pane: {invocations:?}"
+        !invocations
+            .iter()
+            .any(|args| args.windows(2).any(|w| w == ["tab", "create"])),
+        "file outside the origin tree must still split, not open a tab: {invocations:?}"
     );
-    let create = invocations
+    let split = invocations
         .iter()
-        .find(|args| args.windows(2).any(|w| w == ["tab", "create"]))
-        .expect("tab create");
-    let other_root = other.canonicalize().unwrap();
+        .find(|args| args.windows(2).any(|w| w == ["pane", "split"]))
+        .expect("pane split");
     assert!(
-        create.windows(2).any(|w| {
-            w[0] == "--cwd"
-                && (w[1] == other_root.to_string_lossy() || w[1] == other.to_string_lossy())
-        }),
-        "expected --cwd at file git root {other_root:?}, got {create:?}"
+        split.contains(&"w9:agent".to_string()),
+        "split origin: {split:?}"
     );
-    assert!(create
-        .windows(2)
-        .any(|w| { w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=docs/usage.md" }));
+    let docs = docs.canonicalize().unwrap();
     assert!(
-        create.windows(2).any(|w| {
-            w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
-        }),
-        "out-of-tree tab must pass HERDR_PLUGIN_CONFIG_DIR: {create:?}"
+        split
+            .windows(2)
+            .any(|w| w[0] == "--cwd" && w[1] == docs.to_string_lossy()),
+        "split must start in the file's dir: {split:?}"
     );
-    assert!(invocations
-        .iter()
-        .any(|args| args.windows(2).any(|w| w == ["pane", "run"])));
+    assert!(has_env(
+        split,
+        &format!("HERDR_FILE_VIEWER_ROOT={}", docs.display())
+    ));
+    assert!(has_env(
+        split,
+        &format!(
+            "HERDR_FILE_VIEWER_OPEN={}:7",
+            docs.join("Jane Doe - spec.md").display()
+        )
+    ));
 }
 
 #[test]

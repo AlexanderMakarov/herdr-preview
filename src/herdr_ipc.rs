@@ -4,8 +4,8 @@
 //!
 //! 1. Prefer `HERDR_PLUGIN_CONTEXT_JSON` `.focused_pane_id` when the action is
 //!    launched via a Herdr keybinding. Fall back to `herdr pane current`.
-//! 2. Resolve cwd from a live `herdr pane get <id>` preferring
-//!    `.foreground_cwd` then `.cwd` (important for raw shell panes). Fall back
+//! 2. Resolve cwd from a live `herdr pane get <id>`: `.foreground_cwd` then
+//!    `.cwd` for raw shells, reversed for agent panes (see `pane_cwd`). Fall back
 //!    to context `.focused_pane_cwd` / `.workspace_cwd` or pane-current cwd.
 //! 3. Hint snapshot: tail of pane output via `herdr pane read --source recent
 //!    --lines N` (not full scrollback). `N` defaults to 200, clamped 50–1000
@@ -147,17 +147,32 @@ fn parse_pane_current(json: &str) -> Result<(String, PathBuf), HerdrIpcError> {
         .ok_or(HerdrIpcError::MissingPaneId)?
         .to_string();
 
-    let cwd = pane
-        .get("foreground_cwd")
-        .or_else(|| pane.get("cwd"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or(HerdrIpcError::MissingCwd)?;
-
-    Ok((pane_id, PathBuf::from(cwd)))
+    let cwd = pane_cwd(pane).ok_or(HerdrIpcError::MissingCwd)?;
+    Ok((pane_id, cwd))
 }
 
-/// Live cwd for an already-known pane id (`foreground_cwd` > `cwd`).
+/// The directory relative paths printed in `pane` resolve against.
+///
+/// Plain shells: `foreground_cwd` (follows `cd`; `cwd` is the launch dir).
+/// Agent panes (herdr sets `.agent`): `cwd`. Agent CLIs spawn MCP servers in
+/// their own process group, so `foreground_cwd` can be an MCP child's dir
+/// (e.g. `uv --directory <server>`), not where the agent works.
+fn pane_cwd(pane: &serde_json::Value) -> Option<PathBuf> {
+    let field = |key: &str| {
+        pane.get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    };
+    let is_agent = field("agent").is_some();
+    let (first, second) = if is_agent {
+        ("cwd", "foreground_cwd")
+    } else {
+        ("foreground_cwd", "cwd")
+    };
+    field(first).or_else(|| field(second)).map(PathBuf::from)
+}
+
+/// Live cwd for an already-known pane id (see [`pane_cwd`]).
 fn fetch_pane_cwd(herdr_bin: &Path, pane_id: &str) -> Option<PathBuf> {
     let output = Command::new(herdr_bin)
         .args(["pane", "get", pane_id])
@@ -167,12 +182,7 @@ fn fetch_pane_cwd(herdr_bin: &Path, pane_id: &str) -> Option<PathBuf> {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let pane = value.pointer("/result/pane")?;
-    pane.get("foreground_cwd")
-        .or_else(|| pane.get("cwd"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
+    pane_cwd(value.pointer("/result/pane")?)
 }
 
 /// How many trailing lines to pull for hint tokenization (`recent` source).
