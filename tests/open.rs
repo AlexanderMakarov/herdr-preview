@@ -304,19 +304,48 @@ exit 0
 }
 
 #[test]
-fn open_file_viewer_with_origin_focuses_and_targets_that_pane() {
+fn open_file_viewer_with_origin_splits_origin_rooted_at_its_tree() {
+    // Issue #1: `plugin pane open --target-pane` could root FV at the plugin
+    // package. Split the origin with an explicit --cwd and run the absolute
+    // viewer binary instead, so the tree always roots at the origin worktree.
     let root = temp_fixture("fv-origin");
     let log = stub_log_path(&root);
     let herdr = root.join("herdr");
+    let plugin_root = root.join("fv-plugin");
+    let viewer_bin = plugin_root.join("target/release/herdr-file-viewer");
+    fs::create_dir_all(viewer_bin.parent().unwrap()).unwrap();
+    write_executable(&viewer_bin, "#!/bin/bash\nexit 0\n");
+
+    let list_json = format!(
+        r#"{{"result":{{"plugins":[{{"plugin_id":"herdr-file-viewer","plugin_root":"{}"}}]}}}}"#,
+        plugin_root.display()
+    );
+    let config_dir = root.join("fv-config");
+    fs::create_dir_all(&config_dir).unwrap();
     write_executable(
         &herdr,
         &format!(
             r#"#!/bin/bash
 log={log:?}
+if [ "$1" = plugin ] && [ "$2" = list ] && [ "${{3:-}}" = --json ]; then
+  printf '%s\n' '{list_json}'
+  exit 0
+fi
+if [ "$1" = plugin ] && [ "$2" = config-dir ]; then
+  printf '%s\n' '{config_dir}'
+  exit 0
+fi
+if [ "$1" = pane ] && [ "$2" = split ]; then
+  {log_body}
+  printf '%s\n' '{{"result":{{"pane":{{"pane_id":"w9:fv"}}}}}}'
+  exit 0
+fi
 {log_body}
 exit 0
 "#,
             log = log.display(),
+            list_json = list_json,
+            config_dir = config_dir.display(),
             log_body = log_args_stub(&log),
         ),
     );
@@ -331,25 +360,64 @@ exit 0
     });
 
     let invocations = read_invocations(&stub_log_path(&root));
-    // zoom --on, zoom --off, plugin pane open
     assert!(
-        invocations.len() >= 3,
-        "expected zoom on/off + open, got {invocations:?}"
+        !invocations
+            .iter()
+            .any(|args| args.windows(3).any(|w| w == ["plugin", "pane", "open"])),
+        "must not use plugin pane open (roots at plugin package): {invocations:?}"
     );
-    assert!(invocations.iter().any(|args| {
-        args.windows(2).any(|w| w == ["pane", "zoom"]) && args.iter().any(|a| a == "--on")
-    }));
-    assert!(invocations.iter().any(|args| {
-        args.windows(2).any(|w| w == ["pane", "zoom"]) && args.iter().any(|a| a == "--off")
-    }));
-    let open = invocations
+
+    let split_idx = invocations
         .iter()
-        .find(|args| args.windows(3).any(|w| w == ["plugin", "pane", "open"]))
-        .expect("plugin pane open");
-    assert!(open.windows(2).any(|w| w == ["--target-pane", "w9:shell"]));
-    assert!(open
+        .position(|args| args.windows(2).any(|w| w == ["pane", "split"]))
+        .expect("pane split");
+    let split = &invocations[split_idx];
+    assert!(
+        split.contains(&"w9:shell".to_string()),
+        "split origin: {split:?}"
+    );
+    assert!(split.windows(2).any(|w| w == ["--direction", "right"]));
+    assert!(
+        split.windows(2).any(|w| {
+            w[0] == "--cwd"
+                && (w[1] == cwd.canonicalize().unwrap().to_string_lossy()
+                    || w[1] == cwd.to_string_lossy())
+        }),
+        "split must root at origin tree: {split:?}"
+    );
+    assert!(split
         .windows(2)
-        .any(|w| { w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs" }));
+        .any(|w| w[0] == "--env" && w[1] == "HERDR_FILE_VIEWER_OPEN=src/app.rs"));
+    assert!(
+        split.windows(2).any(|w| {
+            w[0] == "--env" && w[1] == format!("HERDR_PLUGIN_CONFIG_DIR={}", config_dir.display())
+        }),
+        "split must pass HERDR_PLUGIN_CONFIG_DIR: {split:?}"
+    );
+
+    let run_idx = invocations
+        .iter()
+        .position(|args| args.windows(2).any(|w| w == ["pane", "run"]))
+        .expect("pane run");
+    assert!(run_idx > split_idx);
+    let run = &invocations[run_idx];
+    // `exec` so the split closes when FV quits, like a plugin pane.
+    let viewer = viewer_bin.to_string_lossy().into_owned();
+    assert!(
+        run.windows(3)
+            .any(|w| w[0] == "w9:fv" && w[1] == "exec" && w[2] == viewer),
+        "pane run must exec the absolute viewer in the new pane: {run:?}"
+    );
+
+    for flag in ["--on", "--off"] {
+        assert!(
+            invocations[split_idx..].iter().any(|args| {
+                args.windows(3).any(|w| w == ["pane", "zoom", "w9:fv"])
+                    && args.contains(&flag.to_string())
+            }),
+            "expected focus (zoom {flag}) on new FV pane: {invocations:?}"
+        );
+    }
 }
 
 #[test]

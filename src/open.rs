@@ -295,15 +295,17 @@ fn open_target_for_cwd(open_spec: &str, cwd: &Path) -> (PathBuf, String, bool) {
 /// Open a path in herdr-file-viewer.
 ///
 /// When the file is under the origin pane's worktree/cwd and an origin pane id
-/// is known:
-/// 1. Focus the origin pane via zoom --on/--off (same as FV's own launcher)
-/// 2. `plugin pane open --target-pane <origin> --placement split --direction right`
-///    with OPEN env (target-pane binds the spawn to that pane's cwd)
+/// is known: `pane split <origin> --direction right --cwd <root>` with OPEN env,
+/// then `pane run <new> exec <abs-viewer-bin>` and focus the new pane.
 ///
 /// Otherwise (no origin, or the file is outside that tree) use
 /// `tab create --cwd <file's tree>` + `pane run <abs-viewer-bin>` so OPEN is
 /// under the viewer root. Passing an above-root path to a split on the origin
 /// pane makes FV reveal fail and land on the pane cwd tree.
+///
+/// Both paths set the cwd explicitly and run the absolute binary. `plugin pane
+/// open` roots FV from the plugin launch context, which from the hint overlay
+/// can be the FV plugin package instead of the origin pane (issue #1).
 pub fn open_file_viewer(
     open_spec: &str,
     cwd: &Path,
@@ -317,49 +319,89 @@ pub fn open_file_viewer(
 
     if in_origin_tree {
         if let Some(origin) = origin_pane_id.filter(|id| !id.is_empty()) {
-            focus_pane(&herdr_bin, origin)?;
-            let mut cmd = Command::new(&herdr_bin);
-            cmd.args([
-                "plugin",
-                "pane",
-                "open",
-                "--plugin",
-                "herdr-file-viewer",
-                "--entrypoint",
-                "file-viewer",
-                "--placement",
-                "split",
-                "--direction",
-                "right",
-                "--target-pane",
+            return open_file_viewer_via_split(
+                &herdr_bin,
                 origin,
-                "--focus",
-                "--env",
+                &root,
                 &open_env,
-            ]);
-            // Belt-and-suspenders: herdr usually injects this for plugin panes,
-            // but passing it matches the tab-run path and the Windows FV launchers.
-            if let Some(ref cfg) = config_env {
-                cmd.args(["--env", cfg]);
-            }
-            let status = cmd.status().map_err(|err| {
-                if err.kind() == io::ErrorKind::NotFound {
-                    io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
-                } else {
-                    err
-                }
-            })?;
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "herdr plugin pane open exited with {status}"
-                )))
-            };
+                config_env.as_deref(),
+            );
         }
     }
 
     open_file_viewer_via_tab(&herdr_bin, &root, &open_env, config_env.as_deref())
+}
+
+fn herdr_not_found(err: io::Error) -> io::Error {
+    if err.kind() == io::ErrorKind::NotFound {
+        io::Error::new(io::ErrorKind::NotFound, "herdr not found on PATH")
+    } else {
+        err
+    }
+}
+
+fn open_file_viewer_via_split(
+    herdr_bin: &Path,
+    origin: &str,
+    root: &Path,
+    open_env: &str,
+    config_env: Option<&str>,
+) -> io::Result<()> {
+    let viewer = file_viewer_bin(herdr_bin)?;
+    let mut cmd = Command::new(herdr_bin);
+    cmd.args([
+        "pane",
+        "split",
+        origin,
+        "--direction",
+        "right",
+        "--cwd",
+        &root.to_string_lossy(),
+        "--env",
+        open_env,
+    ]);
+    if let Some(cfg) = config_env {
+        cmd.args(["--env", cfg]);
+    }
+    let split = cmd.output().map_err(herdr_not_found)?;
+    if !split.status.success() {
+        return Err(io::Error::other(format!(
+            "herdr pane split exited with {}",
+            split.status
+        )));
+    }
+    let pane_id = parse_pane_split_pane_id(&split.stdout)?;
+
+    // `exec` replaces the split's shell, so the pane closes when FV quits
+    // (matching a plugin pane) instead of leaving an idle shell behind.
+    let status = Command::new(herdr_bin)
+        .args(["pane", "run", &pane_id, "exec"])
+        .arg(&viewer)
+        .status()
+        .map_err(herdr_not_found)?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "herdr pane run exited with {status}"
+        )));
+    }
+
+    focus_pane(herdr_bin, &pane_id)
+}
+
+fn parse_pane_split_pane_id(stdout: &[u8]) -> io::Result<String> {
+    let value: Value = serde_json::from_slice(stdout)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    value
+        .pointer("/result/pane/pane_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pane split response missing result.pane.pane_id",
+            )
+        })
 }
 
 fn open_file_viewer_via_tab(
