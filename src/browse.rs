@@ -441,18 +441,35 @@ fn browse_pick(state: &mut BrowseState) -> io::Result<BrowseOutcome> {
     let _raw = RawMode::enter(tty.as_raw_fd())?;
     let _term = TerminalGuard::enter(&mut stdout)?;
     let mut leftover = Vec::new();
+    // Size the last frame was painted for; `None` forces a repaint.
+    let mut painted: Option<(u16, u16)> = None;
 
     loop {
         let (rows, cols) = tty_size(tty.as_raw_fd()).unwrap_or((24, 80));
         let visible_rows = (rows as usize).saturating_sub(2).max(1);
-        paint_browse(&mut stdout, state, rows, cols)?;
+        if painted != Some((rows, cols)) {
+            paint_browse(&mut stdout, state, rows, cols)?;
+            painted = Some((rows, cols));
+        }
 
+        // `None` = idle timeout or unknown input: loop to re-check pane size.
+        // Herdr can resize the overlay after the first paint; without this the
+        // stale frame stays shifted until the next key and clicks hit the
+        // wrong row.
         let key = match read_browse_key(&mut tty, &mut leftover)? {
             Some(key) => key,
             None => continue,
         };
+        // Any key may change state; repaint on the next iteration.
+        painted = None;
 
         let outcome = match key {
+            BrowseKey::MouseClick { .. }
+                if tty_size(tty.as_raw_fd()).unwrap_or((24, 80)) != (rows, cols) =>
+            {
+                // Clicked on a frame painted for another size: just repaint.
+                BrowseOutcome::Continue
+            }
             BrowseKey::MouseClick { row, .. } => {
                 if let Some(cmd) = click_command(state, row, rows) {
                     let _ = state.apply(cmd, visible_rows);
@@ -485,6 +502,9 @@ fn paint_browse(out: &mut impl Write, state: &BrowseState, rows: u16, cols: u16)
             write!(out, "{line}{ANSI_CLR_EOL}")?;
         }
     }
+    // Park the cursor top-left: if the pane shrinks, the terminal keeps the
+    // cursor row visible, so a cursor on the footer would scroll the list up.
+    write!(out, "{ANSI_HOME}")?;
     out.flush()
 }
 
@@ -564,9 +584,35 @@ fn open_tty() -> io::Result<fs::File> {
         .open("/dev/tty")
 }
 
+/// How often the idle loop re-checks the pane size for resize repaints.
+const IDLE_POLL_MS: libc::c_int = 100;
+
+fn poll_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> io::Result<bool> {
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    match unsafe { libc::poll(&mut pollfd, 1, timeout_ms) } {
+        0 => Ok(false),
+        n if n > 0 => Ok(true),
+        _ => {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 fn read_browse_key(tty: &mut fs::File, leftover: &mut Vec<u8>) -> io::Result<Option<BrowseKey>> {
     loop {
         if leftover.is_empty() {
+            if !poll_readable(tty.as_raw_fd(), IDLE_POLL_MS)? {
+                return Ok(None);
+            }
             let mut buf = [0u8; 1];
             tty.read_exact(&mut buf)?;
             if buf[0] != ESC {
@@ -604,5 +650,19 @@ fn read_browse_key(tty: &mut fs::File, leftover: &mut Vec<u8>) -> io::Result<Opt
             return Ok(None);
         }
         leftover.extend_from_slice(&extra[..n]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_parks_cursor_home_so_pane_shrink_cannot_scroll_list() {
+        let state = BrowseState::open(&std::env::temp_dir());
+        let mut out = Vec::new();
+        paint_browse(&mut out, &state, 6, 40).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.ends_with(ANSI_HOME), "frame must end with cursor home");
     }
 }
